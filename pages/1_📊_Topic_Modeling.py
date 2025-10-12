@@ -1,15 +1,17 @@
-import streamlit as st
 import os
 import re
 import glob
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.decomposition import LatentDirichletAllocation
-from nltk.corpus import stopwords
-from nltk.stem import WordNetLemmatizer
 import nltk
+import spacy
+import pandas as pd
+import streamlit as st
+import plotly.express as px
+from nltk.corpus import stopwords
+import plotly.graph_objects as go
+from gensim.corpora import Dictionary
+from gensim.models import CoherenceModel
+from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
+from sklearn.decomposition import NMF, LatentDirichletAllocation
 
 # Download NLTK data if needed
 try:
@@ -20,7 +22,7 @@ except LookupError:
 
 # Page configuration
 st.set_page_config(
-    page_title="Mann Ki Baat Topic Analysis",
+    page_title="Topic Modeling",
     page_icon="📊",
     layout="wide"
 )
@@ -35,12 +37,6 @@ st.markdown("""
         text-align: center;
         margin-bottom: 1rem;
     }
-    .metric-card {
-        background-color: #f0f2f6;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        margin: 0.5rem 0;
-    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -50,27 +46,41 @@ if 'model_trained' not in st.session_state:
     st.session_state.df = None
     st.session_state.topics = None
     st.session_state.topic_labels = None
-    st.session_state.lda = None
+    st.session_state.model = None
     st.session_state.vectorizer = None
 
-# Stopwords and lemmatizer
+# Enhanced stopwords
 custom_stopwords = [
     "sir", "modi", "minister", "prime", "ji", "friends",
-    "countrymen", "dear", "namaskar", "honourable", "respected"
+    "countrymen", "dear", "namaskar", "honourable", "respected",
+    "tell", "say", "said", "come", "go", "make", "take", "give",
+    "program", "programme", "today", "year", "time", "day",
+    "india", "indian", "country", "people", "person", "thing",
+    "way", "work", "effort", "initiative", "lot", "also",
+    "become", "get", "start", "talk", "speak", "mention",
+    "important", "great", "good", "new", "mann", "baat", "ki"
 ]
 stop_words = set(stopwords.words("english")) | set(custom_stopwords)
 stop_words = list(stop_words)
-lemmatizer = WordNetLemmatizer()
 
-# Text cleaning function
+# Load spaCy
+nlp = spacy.load("en_core_web_sm", disable=["ner", "parser"])
+
 @st.cache_data
-def clean_text(text):
-    text = text.lower()
-    text = re.sub(r"[^a-z\s]", " ", text)
-    tokens = [lemmatizer.lemmatize(w) for w in text.split() if w not in stop_words and len(w) > 2]
+def clean_text_spacy(text):
+    """Enhanced text cleaning with POS filtering"""
+    doc = nlp(text.lower())
+    tokens = [
+        token.lemma_ for token in doc
+        if token.is_alpha
+        and token.text not in stop_words
+        and not token.is_stop
+        and len(token.text) > 3
+        and not token.like_num
+        and token.pos_ in ['NOUN', 'VERB', 'ADJ']
+    ]
     return " ".join(tokens)
 
-# Load transcripts function
 @st.cache_data
 def load_transcripts(path):
     data = []
@@ -88,40 +98,50 @@ def load_transcripts(path):
             ep_no = re.findall(r"\d+", base)
             ep_no = int(ep_no[0]) if ep_no else None
 
-        cleaned = clean_text(raw)
+        cleaned = clean_text_spacy(raw)
         data.append({"episode": ep_no, "date": ep_date, "raw": raw, "clean": cleaned})
     return pd.DataFrame(data)
 
-# Topic labeling function
 def infer_label(top_words):
-    if any(w in top_words for w in ["health", "doctor", "hospital", "patient", "disease", "covid", "oxygen", "vaccine"]):
-        return "Healthcare & Pandemic Response"
-    if any(w in top_words for w in ["yoga", "fitness", "wellness", "meditation", "spiritual"]):
-        return "Yoga & Wellness"
-    if any(w in top_words for w in ["water", "river", "lake", "cleanliness", "environment", "conservation", "sarovar"]):
-        return "Environment & Water Conservation"
-    if any(w in top_words for w in ["education", "student", "school", "learning", "mathematics", "teacher", "exam", "book"]):
-        return "Education & Learning"
-    if any(w in top_words for w in ["startup", "innovation", "technology", "science", "space", "research", "digital"]):
-        return "Innovation & Technology"
-    if any(w in top_words for w in ["woman", "selfhelp", "empowerment", "family", "children", "youth"]):
-        return "Social Empowerment & Youth"
-    if any(w in top_words for w in ["toy", "tribal", "culture", "heritage", "art", "craft", "festival", "tradition"]):
-        return "Culture & Rural Development"
-    if any(w in top_words for w in ["farmer", "crop", "agriculture", "soil", "village"]):
-        return "Agriculture & Rural Economy"
+    """Enhanced topic labeling with expanded keywords"""
+    keyword_map = {
+        "Healthcare & Pandemic Response": ["health", "doctor", "hospital", "patient", "disease", "covid", "oxygen", "vaccine", "medicine", "treatment"],
+        "Yoga & Wellness": ["yoga", "fitness", "wellness", "meditation", "spiritual", "exercise", "body", "asana"],
+        "Environment & Water Conservation": ["water", "river", "lake", "cleanliness", "environment", "conservation", "pollution", "clean", "climate"],
+        "Education & Learning": ["education", "student", "school", "learning", "mathematics", "teacher", "exam", "book"],
+        "Innovation & Technology": ["startup", "innovation", "technology", "science", "space", "research", "digital", "develop"],
+        "Social Empowerment & Youth": ["woman", "selfhelp", "empowerment", "family", "children", "youth", "daughter", "mother"],
+        "Culture & Rural Development": ["toy", "tribal", "culture", "heritage", "art", "craft", "festival", "tradition"],
+        "Agriculture & Rural Economy": ["farmer", "crop", "agriculture", "soil", "village", "field", "harvest", "farm"],
+        "National Security & Defense": ["soldier", "army", "defense", "security", "force", "border", "military", "nation"],
+        "Sports & Athletics": ["sport", "athlete", "player", "game", "medal", "competition", "championship", "olympics"],
+        "Finance & Economy": ["finance", "stock", "investment", "bank", "economy", "market", "trade", "money"],
+        "Infrastructure & Development": ["road", "highway", "bridge", "railway", "metro", "airport", "infrastructure", "construction"],
+        "Energy & Power": ["energy", "power", "electricity", "solar", "wind", "renewable", "battery", "fuel"],
+        "Digital India & E-Governance": ["digital", "online", "portal", "website", "app", "application", "service", "egovernance"],
+        "Manufacturing & Make in India": ["manufacturing", "industry", "factory", "production", "assembly", "plant", "machinery"],
+        "Skill Development & Employment": ["skill", "training", "employment", "job", "career", "vocational", "apprentice", "workshop"],
+    }
+    
+    for label, keywords in keyword_map.items():
+        if any(w in top_words for w in keywords):
+            return label
+    
     return "General / Mixed Theme"
 
-# Get topics function
-def get_topics(model, feature_names, n_top_words=10):
+def get_topics(model, feature_names, n_top_words=10, min_weight=0.0005):
     topics = []
     for idx, topic in enumerate(model.components_):
-        top_terms = [feature_names[i] for i in topic.argsort()[:-n_top_words-1:-1]]
+        word_weights = [(feature_names[i], topic[i]) 
+                       for i in range(len(feature_names)) 
+                       if topic[i] > min_weight]
+        word_weights.sort(key=lambda x: x[1], reverse=True)
+        top_terms = [w[0] for w in word_weights[:n_top_words]]
         topics.append(top_terms)
     return topics
 
 # Main UI
-st.markdown('<div class="main-header">📊 Mann Ki Baat Topic Modeling Dashboard</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">📊 Mann Ki Baat Topic Modeling</div>', unsafe_allow_html=True)
 st.markdown("---")
 
 # Sidebar
@@ -134,10 +154,17 @@ with st.sidebar:
         help="Path to the folder containing transcript files"
     )
     
-    n_topics = st.slider("Number of Topics", min_value=3, max_value=15, value=6)
-    max_df = st.slider("Max Document Frequency", min_value=0.3, max_value=1.0, value=0.6, step=0.05)
-    min_df = st.slider("Min Document Count", min_value=1, max_value=5, value=2)
-    n_top_words = st.slider("Words per Topic", min_value=5, max_value=20, value=10)
+    model_type = st.selectbox(
+        "Model Type",
+        ["NMF (Recommended)", "LDA (Traditional)"],
+        help="NMF often produces cleaner topics"
+    )
+    
+    n_topics = st.slider("Number of Topics", min_value=3, max_value=15, value=8)
+    max_df = st.slider("Max Document Frequency", min_value=0.3, max_value=0.9, value=0.5, step=0.05)
+    min_df = st.slider("Min Document Count", min_value=2, max_value=10, value=4)
+    max_features = st.slider("Max Vocabulary Size", min_value=500, max_value=2000, value=1000, step=100)
+    n_top_words = st.slider("Words per Topic", min_value=8, max_value=20, value=12)
     
     st.markdown("---")
     
@@ -150,113 +177,148 @@ with st.sidebar:
                     st.error("No transcripts found! Check the path.")
                 else:
                     st.success(f"Loaded {len(df)} episodes")
-                    
-                    # Vectorize
+
                     with st.spinner("Vectorizing text..."):
-                        vectorizer = CountVectorizer(
-                            max_df=max_df,
-                            min_df=min_df,
-                            max_features=5000,
-                            stop_words=stop_words,
-                            ngram_range=(1,2)
-                        )
+                        if model_type == "NMF (Recommended)":
+                            vectorizer = TfidfVectorizer(
+                                max_df=max_df, min_df=min_df, ngram_range=(1, 2),
+                                stop_words=stop_words, max_features=max_features, sublinear_tf=True
+                            )
+                        else:
+                            vectorizer = CountVectorizer(
+                                max_df=max_df, min_df=min_df, ngram_range=(1, 2),
+                                stop_words=stop_words, max_features=max_features
+                            )
+                        
                         doc_term_matrix = vectorizer.fit_transform(df["clean"])
-                    
-                    # Train LDA
-                    with st.spinner("Training LDA model..."):
-                        lda = LatentDirichletAllocation(n_components=n_topics, random_state=42)
-                        lda.fit(doc_term_matrix)
-                    
-                    # Extract topics
+                        st.info(f"Vocabulary size: {len(vectorizer.get_feature_names_out())} words")
+
+                    with st.spinner(f"Training {model_type} model..."):
+                        if model_type == "NMF (Recommended)":
+                            model = NMF(n_components=n_topics, random_state=42, max_iter=300)
+                        else:
+                            model = LatentDirichletAllocation(
+                                n_components=n_topics, learning_method='batch',
+                                max_iter=50, random_state=42, n_jobs=-1
+                            )
+                        
+                        model.fit(doc_term_matrix)
+
                     terms = vectorizer.get_feature_names_out()
-                    topics = get_topics(lda, terms, n_top_words)
+                    topics = get_topics(model, terms, n_top_words)
                     topic_labels = {i: infer_label(t) for i, t in enumerate(topics)}
-                    
-                    # Compute distributions
-                    topic_distributions = lda.transform(doc_term_matrix)
+
+                    topic_distributions = model.transform(doc_term_matrix)
                     df["date"] = pd.to_datetime(df["date"], errors="coerce")
                     df["quarter"] = df["date"].dt.to_period("Q")
-                    
+
                     topic_cols = [f"Topic_{i}" for i in range(len(topics))]
                     df_topics = pd.DataFrame(topic_distributions, columns=topic_cols)
                     df = pd.concat([df, df_topics], axis=1)
-                    
-                    # Store in session state
+
                     st.session_state.model_trained = True
                     st.session_state.df = df
                     st.session_state.topics = topics
                     st.session_state.topic_labels = topic_labels
-                    st.session_state.lda = lda
+                    st.session_state.model = model
                     st.session_state.vectorizer = vectorizer
                     st.session_state.topic_cols = topic_cols
-                    
+                    st.session_state.model_type = model_type
+
                     st.success("✅ Model trained successfully!")
                     st.rerun()
-                    
+
             except Exception as e:
                 st.error(f"Error: {str(e)}")
-    
-    if st.session_state.model_trained:
-        st.markdown("---")
-        st.success("✅ Model Ready")
-        st.metric("Total Episodes", len(st.session_state.df))
-        st.metric("Topics", len(st.session_state.topics))
 
 # Main content
 if not st.session_state.model_trained:
     st.info("👈 Configure parameters and click 'Train Model' to start the analysis")
     
-    # Show sample info
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("Default Topics", "6")
+        st.metric("Default Topics", "8")
     with col2:
-        st.metric("Max DF", "0.60")
+        st.metric("Max DF", "0.50")
     with col3:
-        st.metric("Min DF", "2")
+        st.metric("Min DF", "4")
+    with col4:
+        st.metric("Max Features", "1000")
     
 else:
-    # Tabs for different views
-    tab1, tab2, tab3, tab4 = st.tabs(["📈 Topic Overview", "📊 Temporal Analysis", "🔍 Episode Explorer", "📥 Export Data"])
-    
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📈 Topic Overview",
+        "📊 Temporal Analysis",
+        "🔍 Episode Explorer",
+        "💾 Export Data"
+    ])
+
     df = st.session_state.df
     topics = st.session_state.topics
     topic_labels = st.session_state.topic_labels
     topic_cols = st.session_state.topic_cols
+    model_type = st.session_state.model_type
     
     # Tab 1: Topic Overview
     with tab1:
-        st.header("Discovered Topics")
+        st.header(f"Discovered Topics ({model_type})")
         
-        for i, topic_words in enumerate(topics):
-            label = topic_labels.get(i, f"Topic {i+1}")
-            with st.expander(f"**Topic {i+1}: {label}**", expanded=(i < 3)):
-                st.write(f"**Top Words:** {', '.join(topic_words[:10])}")
+        quarters = sorted([str(q) for q in df["quarter"].dropna().unique()], reverse=True)
+        
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.subheader("Filter by Quarter")
+        with col2:
+            filter_option = st.selectbox(
+                "Select Quarter",
+                ["All Quarters"] + quarters,
+                key="topic_overview_quarter_filter"
+            )
+        
+        if filter_option != "All Quarters":
+            filtered_df = df[df["quarter"] == filter_option]
+            st.info(f"Showing topics for **{filter_option}** ({len(filtered_df)} episodes)")
+        else:
+            filtered_df = df
+            st.info(f"Showing topics across **all quarters** ({len(filtered_df)} episodes)")
+        
+        st.markdown("---")
+        
+        if not filtered_df.empty:
+            mean_topic_dist = filtered_df[topic_cols].mean().sort_values(ascending=False)
+            
+            for i, topic_words in enumerate(topics):
+                label = topic_labels.get(i, f"Topic {i+1}")
+                topic_col = f"Topic_{i}"
+                avg_score = mean_topic_dist[topic_col]
                 
-                # Word importance chart
-                word_weights = st.session_state.lda.components_[i]
-                top_indices = word_weights.argsort()[:-11:-1]
-                terms = st.session_state.vectorizer.get_feature_names_out()
-                top_words = [terms[idx] for idx in top_indices]
-                top_weights = [word_weights[idx] for idx in top_indices]
-                
-                fig = px.bar(
-                    x=top_weights[::-1],
-                    y=top_words[::-1],
-                    orientation='h',
-                    labels={'x': 'Weight', 'y': 'Word'},
-                    title=f"Word Importance in {label}"
-                )
-                fig.update_layout(height=400, showlegend=False)
-                st.plotly_chart(fig, use_container_width=True)
+                with st.expander(f"**Topic {i+1}: {label}** (Avg: {avg_score:.3f})", expanded=(i < 3)):
+                    st.write(f"**Top Words:** {', '.join(topic_words[:12])}")
+                    
+                    word_weights = st.session_state.model.components_[i]
+                    top_indices = word_weights.argsort()[:-13:-1]
+                    terms = st.session_state.vectorizer.get_feature_names_out()
+                    top_words = [terms[idx] for idx in top_indices]
+                    top_weights = [word_weights[idx] for idx in top_indices]
+                    
+                    fig = px.bar(
+                        x=top_weights[::-1], y=top_words[::-1], orientation='h',
+                        labels={'x': 'Weight', 'y': 'Word'},
+                        title=f"Word Importance in {label}"
+                    )
+                    fig.update_layout(height=400, showlegend=False)
+                    st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("No data available for selected quarter")
     
     # Tab 2: Temporal Analysis
     with tab2:
         st.header("Topic Distribution Over Time")
         
-        # Quarter-wise analysis - FIXED aggregation
         quarterly_data = []
         for quarter, group in df.groupby("quarter"):
+            if pd.isna(quarter):
+                continue
             mean_dist = group[topic_cols].mean()
             for i, col in enumerate(topic_cols):
                 label = topic_labels.get(i, f"Topic {i+1}")
@@ -268,41 +330,25 @@ else:
         
         quarterly_df = pd.DataFrame(quarterly_data)
         
-        # Create pivot - aggregating any remaining duplicates
-        try:
+        if not quarterly_df.empty:
             pivot_df = quarterly_df.pivot_table(
-                index="Quarter", 
-                columns="Topic", 
-                values="Distribution",
-                aggfunc='mean'
+                index="Quarter", columns="Topic", values="Distribution", aggfunc='mean'
             )
-        except Exception as e:
-            st.error(f"Error creating pivot: {e}")
-            pivot_df = pd.DataFrame()
-        
-        if not pivot_df.empty:
-            # Stacked area chart
+            
             fig = go.Figure()
             for topic in pivot_df.columns:
                 fig.add_trace(go.Scatter(
-                    x=pivot_df.index,
-                    y=pivot_df[topic],
-                    name=topic,
-                    mode='lines',
-                    stackgroup='one',
-                    fillcolor=None
+                    x=pivot_df.index, y=pivot_df[topic],
+                    name=topic, mode='lines', stackgroup='one'
                 ))
             
             fig.update_layout(
                 title="Topic Evolution Across Quarters",
-                xaxis_title="Quarter",
-                yaxis_title="Topic Distribution",
-                hovermode='x unified',
-                height=500
+                xaxis_title="Quarter", yaxis_title="Topic Distribution",
+                hovermode='x unified', height=500
             )
             st.plotly_chart(fig, use_container_width=True)
         
-        # Top topics per quarter
         st.subheader("Top 5 Topics Per Quarter")
         
         results = []
@@ -327,15 +373,13 @@ else:
         results_df = pd.DataFrame(results)
         
         if not results_df.empty:
-            # Filter by quarter
             quarters = sorted(results_df["Quarter"].unique(), reverse=True)
             selected_quarter = st.selectbox("Select Quarter", quarters)
             quarter_data = results_df[results_df["Quarter"] == selected_quarter]
             
             st.dataframe(
                 quarter_data[["Rank", "Topic", "Top Words", "Score"]],
-                use_container_width=True,
-                hide_index=True
+                use_container_width=True, hide_index=True
             )
         else:
             st.warning("No quarterly data available")
@@ -361,22 +405,18 @@ else:
                 st.metric("Quarter", str(episode_data["quarter"]))
             
             with col2:
-                # Topic distribution for this episode
                 topic_dist = {topic_labels.get(i, f"Topic {i+1}"): episode_data[f"Topic_{i}"] 
                               for i in range(len(topics))}
                 topic_dist_sorted = dict(sorted(topic_dist.items(), key=lambda x: x[1], reverse=True))
                 
                 fig = px.bar(
-                    x=list(topic_dist_sorted.values()),
-                    y=list(topic_dist_sorted.keys()),
-                    orientation='h',
-                    title=f"Topic Distribution - Episode {int(selected_episode)}",
+                    x=list(topic_dist_sorted.values()), y=list(topic_dist_sorted.keys()),
+                    orientation='h', title=f"Topic Distribution - Episode {int(selected_episode)}",
                     labels={'x': 'Probability', 'y': 'Topic'}
                 )
                 fig.update_layout(height=400, showlegend=False)
                 st.plotly_chart(fig, use_container_width=True)
             
-            # Show transcript excerpt
             with st.expander("📄 View Transcript Excerpt"):
                 raw_text = episode_data["raw"]
                 st.text_area("Raw Transcript", raw_text[:2000] + "..." if len(raw_text) > 2000 else raw_text, height=300)
@@ -390,7 +430,6 @@ else:
         col1, col2 = st.columns(2)
         
         with col1:
-            # Export quarterly topics
             st.subheader("📊 Quarterly Topics")
             results = []
             for quarter, group in df.groupby("quarter"):
@@ -424,12 +463,10 @@ else:
                 st.warning("No data to export")
         
         with col2:
-            # Export episode-level data
             st.subheader("📑 Episode-Level Data")
             export_cols = ["episode", "date", "quarter"] + topic_cols
             export_df = df[export_cols].copy()
             
-            # Rename columns with labels
             rename_dict = {f"Topic_{i}": topic_labels.get(i, f"Topic {i+1}") for i in range(len(topics))}
             export_df = export_df.rename(columns=rename_dict)
             
@@ -443,11 +480,4 @@ else:
             )
         
         st.markdown("---")
-        st.info("💡 Tip: Use these CSV files for further analysis in Excel, Python, or other tools.")
-
-# Footer
-st.markdown("---")
-st.markdown(
-    "<div style='text-align: center; color: gray;'>Built with Streamlit | Topic Modeling with LDA</div>",
-    unsafe_allow_html=True
-)
+        st.info("💡 Tip: Download these files to use in the Stock Market Impact analysis")
