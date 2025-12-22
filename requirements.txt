@@ -6,6 +6,5 @@ nltk>=3.8.0
 spacy>=3.6.0
 gensim>=4.3.0
 plotly>=5.17.0
-
-# Download spaCy English model after installing requirements:
-# python -m spacy download en_core_web_sm
+yfinance>=0.2.0
+https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.6.0/en_core_web_sm-3.6.0-py3-none-any.whl
