@@ -29,11 +29,10 @@ topics = st.session_state.topics
 topic_labels = st.session_state.topic_labels
 topic_cols = st.session_state.topic_cols
 
-# Generate quarterly topics data from session state
+# Generate quarterly topics data
 st.sidebar.header("🗂 Data Configuration")
 st.success(f"✅ Using data from trained model ({len(df)} episodes)")
 
-# Create quarterly topics dataframe
 quarterly_results = []
 for quarter, group in df.groupby("quarter"):
     if pd.isna(quarter):
@@ -54,7 +53,7 @@ for quarter, group in df.groupby("quarter"):
 
 topics_df = pd.DataFrame(quarterly_results)
 
-# Convert Quarter string to datetime
+# Convert Quarter to datetime
 try:
     topics_df["Quarter_Date"] = pd.PeriodIndex(topics_df["Quarter"], freq="Q").to_timestamp()
     st.info(f"📅 Topic data spans: {topics_df['Quarter_Date'].min().strftime('%Y-%m-%d')} to {topics_df['Quarter_Date'].max().strftime('%Y-%m-%d')}")
@@ -62,7 +61,7 @@ except Exception as e:
     st.error(f"Error parsing Quarter column: {e}")
     st.stop()
 
-# Topic-sector mapping
+# UPDATED Topic-sector mapping with reliable tickers only
 st.sidebar.markdown("---")
 st.sidebar.header("🏢 Topic–Sector Mapping")
 
@@ -73,25 +72,25 @@ topic_to_companies = {
     "Energy & Power": ["RELIANCE.NS", "NTPC.NS", "POWERGRID.NS"],
     "Manufacturing & Make in India": ["TATASTEEL.NS", "MARUTI.NS", "TATAMOTORS.NS", "M&M.NS"],
     "Agriculture & Rural Economy": ["ITC.NS", "UPL.NS", "PIDILITIND.NS"],
-    "Infrastructure & Development": ["LT.NS", "ULTRACEMCO.NS"],
+    "Infrastructure & Development": ["LT.NS", "ULTRACEMCO.NS", "GRASIM.NS"],
     "Healthcare & Pandemic Response": ["SUNPHARMA.NS", "DRREDDY.NS", "CIPLA.NS"],
     "Social Empowerment & Youth": ["HINDUNILVR.NS", "ITC.NS", "DABUR.NS"],
-    "Education & Learning": ["ITC.NS", "HINDUNILVR.NS"],
-    "Yoga & Wellness": ["SUNPHARMA.NS", "DRREDDY.NS"],
-    "Environment & Water Conservation": ["ITC.NS", "TATASTEEL.NS"],
-    "Culture & Rural Development": ["ITC.NS", "TITAN.NS"],
+    "Education & Learning": ["ITC.NS", "HINDUNILVR.NS", "TITAN.NS"],
+    "Yoga & Wellness": ["SUNPHARMA.NS", "DRREDDY.NS", "CIPLA.NS"],
+    "Environment & Water Conservation": ["ITC.NS", "TATASTEEL.NS", "GRASIM.NS"],
+    "Culture & Rural Development": ["ITC.NS", "TITAN.NS", "HINDUNILVR.NS"],
     "General / Mixed Theme": ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS"],
 }
 
 tickers = sorted(set(sum(topic_to_companies.values(), [])))
 st.sidebar.write(f"Tracking **{len(tickers)} companies** across **{len(topic_to_companies)} topics**")
 
-# Enhanced stock data fetching with retry logic
+# Enhanced stock fetching function
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_stock_data_robust(tickers, start, end, max_retries=3):
-    """Fetch stock data with enhanced error handling and retry logic"""
+def fetch_stock_data_robust(tickers, start, end, max_retries=2):
+    """Fetch stock data with robust error handling"""
     
-    # Ensure dates are strings in YYYY-MM-DD format
+    # Convert dates to strings
     if isinstance(start, pd.Timestamp):
         start = start.strftime('%Y-%m-%d')
     if isinstance(end, pd.Timestamp):
@@ -100,26 +99,23 @@ def fetch_stock_data_robust(tickers, start, end, max_retries=3):
     all_data = {}
     failed = []
     
-    # Split tickers into smaller batches to avoid rate limiting
-    batch_size = 5
+    # Use smaller batches
+    batch_size = 3
     ticker_batches = [tickers[i:i+batch_size] for i in range(0, len(tickers), batch_size)]
     
     progress_bar = st.progress(0)
     status_text = st.empty()
     
     for batch_idx, batch in enumerate(ticker_batches):
-        status_text.text(f"Fetching batch {batch_idx+1}/{len(ticker_batches)}: {', '.join(batch)}")
+        status_text.text(f"📥 Fetching batch {batch_idx+1}/{len(ticker_batches)}")
         
-        retry_count = 0
-        batch_success = False
-        
-        while retry_count < max_retries and not batch_success:
+        retry = 0
+        while retry < max_retries:
             try:
-                # Add delay between requests to avoid rate limiting
-                if batch_idx > 0:
+                if batch_idx > 0 or retry > 0:
                     time.sleep(2)
                 
-                # Try batch download with suppressed warnings
+                # Download batch
                 batch_df = yf.download(
                     batch,
                     start=start,
@@ -128,170 +124,136 @@ def fetch_stock_data_robust(tickers, start, end, max_retries=3):
                     progress=False,
                     group_by='ticker',
                     threads=False,
-                    show_errors=False  # Suppress yfinance error messages
+                    show_errors=False
                 )
                 
                 if not batch_df.empty:
                     for ticker in batch:
                         try:
                             if len(batch) > 1 and ticker in batch_df.columns.get_level_values(0):
-                                ticker_data = batch_df[ticker]['Close']
+                                data = batch_df[ticker]['Close']
                             elif len(batch) == 1:
-                                ticker_data = batch_df['Close']
+                                data = batch_df['Close']
                             else:
                                 failed.append(ticker)
                                 continue
                             
-                            if not ticker_data.empty and not ticker_data.isna().all():
-                                all_data[ticker] = ticker_data
+                            if not data.empty and not data.isna().all():
+                                all_data[ticker] = data
                             else:
                                 failed.append(ticker)
-                        except Exception:
+                        except:
                             failed.append(ticker)
+                    break
+                else:
+                    retry += 1
+                    if retry >= max_retries:
+                        failed.extend(batch)
                     
-                    batch_success = True
-                else:
-                    # If batch completely failed, mark all as failed
-                    failed.extend(batch)
-                    batch_success = True  # Don't retry empty batches
-                
-            except Exception as e:
-                retry_count += 1
-                if retry_count < max_retries:
-                    status_text.text(f"Retry {retry_count}/{max_retries} for batch {batch_idx+1}...")
-                    time.sleep(3 * retry_count)  # Exponential backoff
-                else:
-                    # Mark all in batch as failed after max retries
+            except:
+                retry += 1
+                if retry >= max_retries:
                     failed.extend([t for t in batch if t not in all_data])
+                time.sleep(2 * retry)
         
-        # Update progress
         progress_bar.progress((batch_idx + 1) / len(ticker_batches))
     
     progress_bar.empty()
     status_text.empty()
     
-    # Remove duplicates from failed list
-    failed = list(set(failed))
-    
-    # Fallback: Try individual downloads only for a reasonable number of tickers
+    # Try individual downloads for missing (max 5)
     missing = [t for t in tickers if t not in all_data]
-    
-    if missing and len(all_data) > 0 and len(missing) <= 10:  # Only if we have some success and < 10 missing
-        st.info(f"Attempting individual downloads for {len(missing)} missing tickers...")
-        
-        individual_progress = st.progress(0)
-        for idx, ticker in enumerate(missing):
+    if 0 < len(missing) <= 5 and len(all_data) > 0:
+        st.info(f"🔄 Retrying {len(missing)} individual tickers...")
+        for ticker in missing:
             try:
-                time.sleep(1.5)  # Rate limiting
-                
-                ticker_obj = yf.Ticker(ticker)
-                hist = ticker_obj.history(start=start, end=end, auto_adjust=True)
-                
+                time.sleep(1.5)
+                hist = yf.Ticker(ticker).history(start=start, end=end, auto_adjust=True)
                 if not hist.empty and 'Close' in hist.columns and not hist['Close'].isna().all():
                     all_data[ticker] = hist['Close']
-                    failed.remove(ticker) if ticker in failed else None
-                else:
-                    if ticker not in failed:
-                        failed.append(ticker)
-                        
-            except Exception:
+                    if ticker in failed:
+                        failed.remove(ticker)
+            except:
                 if ticker not in failed:
                     failed.append(ticker)
-            
-            individual_progress.progress((idx + 1) / len(missing))
-        
-        individual_progress.empty()
-    elif missing:
-        failed.extend([t for t in missing if t not in failed])
     
     if not all_data:
         return None, list(set(failed))
     
-    # Combine all data
-    combined_df = pd.DataFrame(all_data)
+    # Combine and resample
+    combined = pd.DataFrame(all_data)
+    combined.index = pd.to_datetime(combined.index)
+    combined = combined.resample('Q').last().dropna(how='all')
     
-    # Resample to quarterly
-    combined_df.index = pd.to_datetime(combined_df.index)
-    combined_df = combined_df.resample('Q').last()
-    combined_df = combined_df.dropna(how='all')
-    
-    # Final validation
-    if combined_df.empty or len(combined_df.columns) == 0:
+    if combined.empty:
         return None, list(set(failed))
     
-    return combined_df, list(set(failed))
+    return combined, list(set(failed))
 
-# Check for demo mode toggle
+# Initialize demo mode state
 if 'use_demo_mode' not in st.session_state:
     st.session_state.use_demo_mode = False
 
-# Demo mode section
+# Demo Mode
 if st.session_state.use_demo_mode:
     st.warning("🎮 **Demo Mode Active** - Using simulated stock data")
     
-    # Generate simulated stock returns
     np.random.seed(42)
-    quarters = pd.period_range(start=topics_df["Quarter_Date"].min(), 
-                               end=topics_df["Quarter_Date"].max(), 
-                               freq='Q')
-    
-    stock_df = pd.DataFrame(
-        index=quarters.to_timestamp(),
-        columns=tickers[:15]  # Use subset of tickers
+    quarters = pd.period_range(
+        start=topics_df["Quarter_Date"].min(), 
+        end=topics_df["Quarter_Date"].max(), 
+        freq='Q'
     )
     
-    # Simulate realistic returns with trends
+    stock_df = pd.DataFrame(index=quarters.to_timestamp(), columns=tickers[:12])
+    
     for col in stock_df.columns:
-        trend = np.random.choice([0.02, 0.01, -0.01], 1)[0]
+        trend = np.random.choice([0.02, 0.01, -0.005])
         stock_df[col] = 100 * (1 + trend + np.random.randn(len(stock_df)) * 0.08).cumprod()
     
     valid_tickers = list(stock_df.columns)
-    st.success(f"✅ Generated {stock_df.shape[0]} quarterly records for {len(valid_tickers)} companies (DEMO)")
-    st.info(f"📅 Stock data spans: {stock_df.index.min().strftime('%Y-%m-%d')} to {stock_df.index.max().strftime('%Y-%m-%d')}")
+    st.success(f"✅ Demo: {len(valid_tickers)} companies, {stock_df.shape[0]} quarters")
+    st.info(f"📅 {stock_df.index.min().strftime('%Y-%m-%d')} to {stock_df.index.max().strftime('%Y-%m-%d')}")
     
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("🔄 Try Real Data Again"):
+        if st.button("🔄 Try Real Data"):
             st.session_state.use_demo_mode = False
             st.rerun()
     with col2:
-        if st.button("🎲 Regenerate Demo Data"):
+        if st.button("🎲 Regenerate Demo"):
             st.cache_data.clear()
             st.rerun()
 
 else:
     # Real data fetching
     st.info("📊 Fetching stock data from Yahoo Finance...")
-    st.write("⏱️ This may take 1-2 minutes. Please be patient...")
-
-    # Prepare date range
+    st.write("⏱️ This may take 30-90 seconds. Please wait...")
+    
     start_date = pd.Timestamp(topics_df["Quarter_Date"].min())
     end_date = pd.Timestamp(topics_df["Quarter_Date"].max()) + pd.DateOffset(months=3)
     
     try:
         stock_df, failed_tickers = fetch_stock_data_robust(tickers, start_date, end_date)
         
-        if stock_df is None or stock_df.empty or len(stock_df.columns) < 5:  # Need at least 5 valid tickers
-            st.error("❌ Insufficient stock data retrieved")
+        # Check if we have enough data
+        if stock_df is None or stock_df.empty or len(stock_df.columns) < 5:
+            st.error("❌ Insufficient stock data")
             
-            with st.expander("📋 Possible Causes & Solutions"):
+            with st.expander("📋 Troubleshooting"):
                 st.write("""
-                **Common Issues:**
-                - Yahoo Finance API rate limiting (most common on Streamlit Cloud)
-                - Invalid or delisted ticker symbols
-                - Network connectivity issues
-                - Date range too old or invalid
+                **Common issues:**
+                - Yahoo Finance rate limiting (Streamlit Cloud shared IP)
+                - Network timeouts
+                - Invalid date range
                 
-                **What to do:**
-                1. **Wait 2-3 minutes** and click "Retry Now"
-                2. Try during **off-peak hours** (early morning IST)
-                3. Use **Demo Mode** to explore functionality
-                4. Check the failed tickers list below
+                **Solutions:**
+                1. **Wait 5 minutes** then click Retry
+                2. Try during **off-peak hours** (6-9 AM IST)
+                3. Use **Demo Mode** (works perfectly!)
                 """)
-                
                 if failed_tickers:
-                    st.write(f"**Failed tickers ({len(failed_tickers)}):**")
-                    st.write(", ".join(failed_tickers))
+                    st.write(f"**Failed:** {', '.join(failed_tickers[:10])}")
             
             col1, col2 = st.columns(2)
             with col1:
@@ -302,7 +264,6 @@ else:
                 if st.button("🎮 Use Demo Mode", type="primary"):
                     st.session_state.use_demo_mode = True
                     st.rerun()
-            
             st.stop()
         
         # Success!
@@ -310,33 +271,25 @@ else:
         success_rate = (len(valid_tickers) / len(tickers)) * 100
         
         if success_rate >= 70:
-            st.success(f"✅ Retrieved {stock_df.shape[0]} quarterly records for {len(valid_tickers)}/{len(tickers)} companies ({success_rate:.0f}% success)")
-        elif success_rate >= 50:
-            st.warning(f"⚠️ Partial success: {len(valid_tickers)}/{len(tickers)} companies ({success_rate:.0f}% success)")
+            st.success(f"✅ Success: {len(valid_tickers)}/{len(tickers)} companies ({success_rate:.0f}%)")
         else:
-            st.info(f"ℹ️ Limited data: {len(valid_tickers)}/{len(tickers)} companies ({success_rate:.0f}% success)")
+            st.warning(f"⚠️ Partial: {len(valid_tickers)}/{len(tickers)} companies ({success_rate:.0f}%)")
         
         if failed_tickers:
-            with st.expander(f"⚠️ Failed tickers: {len(failed_tickers)}/{len(tickers)}"):
+            with st.expander(f"⚠️ Failed: {len(failed_tickers)} tickers"):
                 st.write(", ".join(sorted(failed_tickers)))
-                st.caption("These tickers may be invalid, delisted, or temporarily unavailable")
         
-        st.info(f"📅 Stock data spans: {stock_df.index.min().strftime('%Y-%m-%d')} to {stock_df.index.max().strftime('%Y-%m-%d')}")
+        st.info(f"📅 Data: {stock_df.index.min().strftime('%Y-%m-%d')} to {stock_df.index.max().strftime('%Y-%m-%d')}")
         
-        # Option to switch to demo mode even after successful fetch
-        if success_rate < 100:
-            with st.expander("💡 Want cleaner results?"):
-                st.write("Demo mode provides complete data for all companies without missing tickers.")
-                if st.button("Switch to Demo Mode"):
+        if success_rate < 90:
+            with st.expander("💡 Want complete data?"):
+                st.write("Demo mode has 100% data coverage")
+                if st.button("Switch to Demo"):
                     st.session_state.use_demo_mode = True
                     st.rerun()
         
     except Exception as e:
-        st.error(f"❌ Error fetching stock data: {str(e)}")
-        
-        with st.expander("🔍 Error Details"):
-            import traceback
-            st.code(traceback.format_exc())
+        st.error(f"❌ Error: {str(e)}")
         
         col1, col2 = st.columns(2)
         with col1:
@@ -344,21 +297,20 @@ else:
                 st.cache_data.clear()
                 st.rerun()
         with col2:
-            if st.button("🎮 Use Demo Mode", type="primary"):
+            if st.button("🎮 Demo Mode", type="primary"):
                 st.session_state.use_demo_mode = True
                 st.rerun()
-        
         st.stop()
 
-# Rest of the analysis code continues here...
-# [Keep all the correlation analysis, visualization, and export code the same]
+# === ANALYSIS SECTION ===
+st.markdown("---")
 
 # Compute returns
 returns_df = stock_df.pct_change().dropna(how="all")
 returns_df.index = pd.to_datetime(returns_df.index)
 returns_df["Quarter_Period"] = returns_df.index.to_period("Q")
 
-# Aggregate sector returns
+# Sector returns
 sector_returns = {}
 for topic, comps in topic_to_companies.items():
     valid_comps = [c for c in comps if c in returns_df.columns]
@@ -368,29 +320,27 @@ for topic, comps in topic_to_companies.items():
 sector_df = pd.DataFrame(sector_returns).dropna(how="all")
 sector_df["Quarter_Period"] = returns_df["Quarter_Period"]
 
-# Merge topics + stock returns
-st.markdown("## 🔗 Merging Topic and Stock Data...")
+# Merge topics + stocks
+st.markdown("## 🔗 Merging Topic and Stock Data")
 
 topics_df["Quarter_Period"] = topics_df["Quarter_Date"].dt.to_period("Q")
 
 merged_results = []
-
 for topic, comps in topic_to_companies.items():
     if topic not in sector_df.columns:
         continue
     
-    topic_strength = topics_df.loc[topics_df["Topic_Label"] == topic].copy()
-    if topic_strength.empty:
+    topic_rows = topics_df[topics_df["Topic_Label"] == topic]
+    if topic_rows.empty:
         continue
-
-    for _, row in topic_strength.iterrows():
+    
+    for _, row in topic_rows.iterrows():
         q_period = row["Quarter_Period"]
+        matching = sector_df[sector_df["Quarter_Period"] == q_period]
         
-        matching_stock = sector_df[sector_df["Quarter_Period"] == q_period]
-        
-        if not matching_stock.empty:
+        if not matching.empty:
             topic_rank = 6 - row["Rank"]
-            sector_return = matching_stock[topic].iloc[0]
+            sector_return = matching[topic].iloc[0]
             
             merged_results.append({
                 "Quarter": row["Quarter"],
@@ -402,17 +352,15 @@ for topic, comps in topic_to_companies.items():
 
 merged_df = pd.DataFrame(merged_results).dropna()
 
-st.success(f"✅ Successfully merged {len(merged_df)} topic-stock data points across {merged_df['Quarter'].nunique()} quarters")
-
-# Correlation analysis
-st.markdown("## 🔍 Topic–Sector Correlation Analysis")
-
 if merged_df.empty:
-    st.error("❌ No overlapping quarters found between topic data and stock data.")
-    st.write("**Troubleshooting Tips:**")
-    st.write("1. Check date ranges overlap between topics and stock data")
-    st.write("2. Ensure topic labels match the predefined categories")
+    st.error("❌ No overlapping quarters found")
+    st.info("Check that topic dates and stock dates overlap")
     st.stop()
+
+st.success(f"✅ Merged {len(merged_df)} data points across {merged_df['Quarter'].nunique()} quarters")
+
+# Correlation Analysis
+st.markdown("## 🔍 Topic–Sector Correlation")
 
 corr_summary = (
     merged_df.groupby("Topic")[["Topic_Strength", "Sector_Return"]]
@@ -423,85 +371,97 @@ corr_summary = (
     .drop(columns=["level_1"])
 )
 
-st.dataframe(corr_summary.style.format({"Correlation": "{:.2f}"}), use_container_width=True)
+st.dataframe(
+    corr_summary.style.format({"Correlation": "{:.2f}"}),
+    use_container_width=True
+)
 
 fig = px.bar(
     corr_summary,
     x="Topic",
     y="Correlation",
-    title="Correlation between Topic Strength and Sector Returns",
+    title="Correlation: Topic Strength vs Sector Returns",
     color="Correlation",
     color_continuous_scale="RdYlGn",
-    color_continuous_midpoint=0,
+    color_continuous_midpoint=0
 )
 fig.update_layout(height=500, xaxis_tickangle=-45)
 st.plotly_chart(fig, use_container_width=True)
 
-# Temporal Trend Comparison
-st.markdown("## ⏳ Topic Strength vs Sector Performance Over Time")
+# Temporal Analysis
+st.markdown("## ⏳ Topic Strength vs Sector Performance")
 
 selected_topic = st.selectbox(
-    "Select a Topic to View Trends:",
+    "Select Topic:",
     options=sorted(topic_to_companies.keys())
 )
 
 if selected_topic in merged_df["Topic"].unique():
     subset = merged_df[merged_df["Topic"] == selected_topic].sort_values("Quarter_Date")
+    
     fig2 = go.Figure()
     fig2.add_trace(go.Scatter(
-        x=subset["Quarter_Date"], y=subset["Topic_Strength"],
-        name="Topic Strength", mode="lines+markers", yaxis="y1",
+        x=subset["Quarter_Date"],
+        y=subset["Topic_Strength"],
+        name="Topic Strength",
+        mode="lines+markers",
+        yaxis="y1",
         line=dict(color='#1f77b4', width=3)
     ))
     fig2.add_trace(go.Scatter(
-        x=subset["Quarter_Date"], y=subset["Sector_Return"],
-        name="Sector Return", mode="lines+markers", yaxis="y2",
+        x=subset["Quarter_Date"],
+        y=subset["Sector_Return"],
+        name="Sector Return",
+        mode="lines+markers",
+        yaxis="y2",
         line=dict(color='#ff7f0e', width=3)
     ))
-
+    
     fig2.update_layout(
-        title=f"📅 {selected_topic}: Topic Strength vs Sector Return Over Time",
+        title=f"{selected_topic}: Topic Strength vs Returns",
         xaxis_title="Quarter",
-        yaxis=dict(title="Topic Strength", side="left", showgrid=False),
-        yaxis2=dict(title="Sector Return (%)", side="right", overlaying="y", showgrid=False),
+        yaxis=dict(title="Topic Strength", side="left"),
+        yaxis2=dict(title="Sector Return (%)", side="right", overlaying="y"),
         height=500,
-        legend=dict(orientation="h", y=-0.2),
+        legend=dict(orientation="h", y=-0.2)
     )
     st.plotly_chart(fig2, use_container_width=True)
     
-    with st.expander("📊 View Data Table"):
-        display_cols = ["Quarter", "Topic_Strength", "Sector_Return"]
-        st.dataframe(subset[display_cols].style.format({"Topic_Strength": "{:.2f}", "Sector_Return": "{:.2%}"}))
-else:
-    st.warning("Selected topic not found in merged dataset.")
+    with st.expander("📊 Data Table"):
+        st.dataframe(
+            subset[["Quarter", "Topic_Strength", "Sector_Return"]].style.format({
+                "Topic_Strength": "{:.2f}",
+                "Sector_Return": "{:.2%}"
+            })
+        )
 
-# Export results
-st.markdown("## 💾 Export Analysis Results")
+# Export
+st.markdown("## 💾 Export Results")
 
 col1, col2 = st.columns(2)
 
 with col1:
-    csv_data = merged_df.to_csv(index=False)
+    csv1 = merged_df.to_csv(index=False)
     st.download_button(
-        "Download Merged Topic–Stock Data (CSV)",
-        data=csv_data,
+        "📥 Download Topic-Stock Data",
+        data=csv1,
         file_name="topic_stock_correlation.csv",
         mime="text/csv",
         use_container_width=True
     )
 
 with col2:
-    quarterly_csv = topics_df.to_csv(index=False)
+    csv2 = topics_df.to_csv(index=False)
     st.download_button(
-        "Download Quarterly Topics Data (CSV)",
-        data=quarterly_csv,
-        file_name="quarterly_topics_from_analysis.csv",
+        "📥 Download Quarterly Topics",
+        data=csv2,
+        file_name="quarterly_topics.csv",
         mime="text/csv",
         use_container_width=True
     )
 
 st.markdown("---")
 st.markdown(
-    "<div style='text-align:center; color:gray;'>Built with Streamlit | Topic–Stock Impact Analysis</div>",
+    "<div style='text-align:center; color:gray;'>Topic–Stock Impact Analysis</div>",
     unsafe_allow_html=True
 )
