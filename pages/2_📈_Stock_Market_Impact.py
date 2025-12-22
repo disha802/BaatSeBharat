@@ -93,18 +93,27 @@ end_date = topics_df["Quarter_Date"].max() + pd.DateOffset(months=3)
 
 try:
     with st.spinner("Downloading stock data..."):
+        # Download with daily interval first, then resample to quarterly
         stock_df = yf.download(
             tickers, 
             start=start_date, 
             end=end_date, 
-            interval="3mo",
-            auto_adjust=False,
+            auto_adjust=True,
             progress=False
-        )["Adj Close"]
+        )["Close"]
         
         if isinstance(stock_df, pd.Series):
             stock_df = stock_df.to_frame(name=tickers[0])
         
+        if stock_df.empty or stock_df.shape[0] == 0:
+            st.error("❌ No stock data retrieved. This could be due to:")
+            st.write("- Network/API issues with Yahoo Finance")
+            st.write("- Invalid date range")
+            st.write("- All tickers are invalid")
+            st.stop()
+        
+        # Resample to quarterly
+        stock_df = stock_df.resample('Q').last()
         stock_df = stock_df.dropna(how="all")
         
         missing_tickers = [t for t in tickers if t not in stock_df.columns]
@@ -112,11 +121,20 @@ try:
             st.warning(f"⚠️ Could not fetch data for: {', '.join(missing_tickers)}")
         
         valid_tickers = [t for t in tickers if t in stock_df.columns]
+        
+        if len(valid_tickers) == 0:
+            st.error("❌ No valid stock data available for any ticker")
+            st.stop()
+        
         st.success(f"✅ Retrieved {stock_df.shape[0]} quarterly records for {len(valid_tickers)}/{len(tickers)} companies.")
-        st.info(f"📅 Stock data spans: {stock_df.index.min().strftime('%Y-%m-%d')} to {stock_df.index.max().strftime('%Y-%m-%d')}")
+        
+        if not stock_df.empty and len(stock_df.index) > 0:
+            st.info(f"📅 Stock data spans: {stock_df.index.min().strftime('%Y-%m-%d')} to {stock_df.index.max().strftime('%Y-%m-%d')}")
     
 except Exception as e:
     st.error(f"Error fetching data: {e}")
+    import traceback
+    st.code(traceback.format_exc())
     st.stop()
 
 # Compute returns
