@@ -85,46 +85,121 @@ topic_to_companies = {
 tickers = sorted(set(sum(topic_to_companies.values(), [])))
 st.sidebar.write(f"Tracking **{len(tickers)} companies** across **{len(topic_to_companies)} topics**")
 
-# Fetch stock data
-st.info("📊 Fetching stock data from Yahoo Finance... (This may take 30–60s)")
+# Check for demo mode
+if 'use_demo_mode' in st.session_state and st.session_state.use_demo_mode:
+    st.warning("🎮 **Demo Mode Active** - Using simulated stock data")
+    
+    # Generate simulated stock returns
+    np.random.seed(42)
+    quarters = pd.period_range(start=topics_df["Quarter_Date"].min(), 
+                               end=topics_df["Quarter_Date"].max(), 
+                               freq='Q')
+    
+    stock_df = pd.DataFrame(
+        index=quarters.to_timestamp(),
+        columns=tickers[:10]  # Use subset of tickers
+    )
+    
+    # Simulate realistic returns
+    for col in stock_df.columns:
+        stock_df[col] = 100 * (1 + np.random.randn(len(stock_df)) * 0.1).cumprod()
+    
+    valid_tickers = list(stock_df.columns)
+    st.success(f"✅ Generated {stock_df.shape[0]} quarterly records for {len(valid_tickers)} companies (DEMO)")
+    st.info(f"📅 Stock data spans: {stock_df.index.min().strftime('%Y-%m-%d')} to {stock_df.index.max().strftime('%Y-%m-%d')}")
+    
+    if st.button("🔄 Try Real Data Again"):
+        st.session_state.use_demo_mode = False
+        st.rerun()
 
-start_date = topics_df["Quarter_Date"].min()
-end_date = topics_df["Quarter_Date"].max() + pd.DateOffset(months=3)
+else:
+    # Fetch stock data
+    st.info("📊 Fetching stock data from Yahoo Finance... (This may take 30–60s)")
+
+    start_date = topics_df["Quarter_Date"].min()
+    end_date = topics_df["Quarter_Date"].max() + pd.DateOffset(months=3)
+
+# Add retry with individual ticker downloads
+@st.cache_data(ttl=3600)
+def fetch_stock_data_robust(tickers, start, end):
+    """Fetch stock data with fallback to individual downloads"""
+    all_data = {}
+    failed = []
+    
+    # Try batch download first
+    try:
+        batch_df = yf.download(
+            tickers,
+            start=start,
+            end=end,
+            auto_adjust=True,
+            progress=False,
+            group_by='ticker'
+        )
+        
+        if not batch_df.empty:
+            for ticker in tickers:
+                try:
+                    if len(tickers) > 1:
+                        ticker_data = batch_df[ticker]['Close']
+                    else:
+                        ticker_data = batch_df['Close']
+                    
+                    if not ticker_data.empty and not ticker_data.isna().all():
+                        all_data[ticker] = ticker_data
+                except:
+                    pass
+    except:
+        pass
+    
+    # Fallback: Try individual downloads for missing tickers
+    missing = [t for t in tickers if t not in all_data]
+    
+    if missing:
+        for ticker in missing:
+            try:
+                ticker_obj = yf.Ticker(ticker)
+                hist = ticker_obj.history(start=start, end=end, auto_adjust=True)
+                
+                if not hist.empty and 'Close' in hist.columns:
+                    all_data[ticker] = hist['Close']
+            except Exception as e:
+                failed.append(ticker)
+    
+    if not all_data:
+        return None, failed
+    
+    # Combine all data
+    combined_df = pd.DataFrame(all_data)
+    combined_df = combined_df.resample('Q').last()
+    combined_df = combined_df.dropna(how='all')
+    
+    return combined_df, failed
 
 try:
-    with st.spinner("Downloading stock data..."):
-        # Download with daily interval first, then resample to quarterly
-        stock_df = yf.download(
-            tickers, 
-            start=start_date, 
-            end=end_date, 
-            auto_adjust=True,
-            progress=False
-        )["Close"]
+    with st.spinner("Downloading stock data (trying multiple methods)..."):
+        stock_df, failed_tickers = fetch_stock_data_robust(tickers, start_date, end_date)
         
-        if isinstance(stock_df, pd.Series):
-            stock_df = stock_df.to_frame(name=tickers[0])
-        
-        if stock_df.empty or stock_df.shape[0] == 0:
+        if stock_df is None or stock_df.empty or stock_df.shape[0] == 0:
             st.error("❌ No stock data retrieved. This could be due to:")
-            st.write("- Network/API issues with Yahoo Finance")
-            st.write("- Invalid date range")
-            st.write("- All tickers are invalid")
+            st.write("- **Yahoo Finance API issues** (temporary outage or rate limiting)")
+            st.write("- Network connectivity problems")
+            st.write("- Date range too old (data before 2019 may not be available)")
+            st.write("")
+            st.info("💡 **Try again in a few minutes** or use the demo mode below")
+            
+            # Offer demo mode
+            if st.button("🎮 Use Demo Mode (Simulated Data)"):
+                st.session_state.use_demo_mode = True
+                st.rerun()
             st.stop()
         
-        # Resample to quarterly
-        stock_df = stock_df.resample('Q').last()
-        stock_df = stock_df.dropna(how="all")
+        if failed_tickers:
+            st.warning(f"⚠️ Could not fetch data for {len(failed_tickers)} tickers")
+            with st.expander("View failed tickers"):
+                st.write(failed_tickers)
         
-        missing_tickers = [t for t in tickers if t not in stock_df.columns]
-        if missing_tickers:
-            st.warning(f"⚠️ Could not fetch data for: {', '.join(missing_tickers)}")
-        
-        valid_tickers = [t for t in tickers if t in stock_df.columns]
-        
-        if len(valid_tickers) == 0:
-            st.error("❌ No valid stock data available for any ticker")
-            st.stop()
+        valid_tickers = list(stock_df.columns)
         
         st.success(f"✅ Retrieved {stock_df.shape[0]} quarterly records for {len(valid_tickers)}/{len(tickers)} companies.")
         
