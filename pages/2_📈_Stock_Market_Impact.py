@@ -16,23 +16,42 @@ st.markdown("<h1 style='text-align:center; color:#1f77b4;'>📈 Topic–Stock Im
 st.markdown("### Analyze how Mann Ki Baat topics correlate with Indian stock market sectors")
 st.markdown("---")
 
-# Sidebar
-st.sidebar.header("🗂 Data Configuration")
-
-topic_file = st.sidebar.text_input(
-    "Quarterly Topics CSV path",
-    value="data/quarterly_topics.csv",
-    help="Path to the file exported from Topic Modeling"
-)
-
-# Load topic data
-try:
-    topics_df = pd.read_csv(topic_file)
-    st.success(f"✅ Loaded {len(topics_df)} quarterly topic entries.")
-except Exception as e:
-    st.error(f"Could not load topic file: {e}")
-    st.info("💡 Please run Topic Modeling first and export the data to data/quarterly_topics.csv")
+# Check if model has been trained
+if 'model_trained' not in st.session_state or not st.session_state.model_trained:
+    st.error("⚠️ No topic model data found!")
+    st.info("👉 Please go to the **Topic Modeling** page first and train the model.")
     st.stop()
+
+# Get data from session state
+df = st.session_state.df
+topics = st.session_state.topics
+topic_labels = st.session_state.topic_labels
+topic_cols = st.session_state.topic_cols
+
+# Generate quarterly topics data from session state
+st.sidebar.header("🗂 Data Configuration")
+st.success(f"✅ Using data from trained model ({len(df)} episodes)")
+
+# Create quarterly topics dataframe
+quarterly_results = []
+for quarter, group in df.groupby("quarter"):
+    if pd.isna(quarter):
+        continue
+    mean_dist = group[topic_cols].mean().sort_values(ascending=False)
+    top_topic_ids = mean_dist.index[:5]
+    
+    for rank, tid in enumerate(top_topic_ids, start=1):
+        idx = int(tid.split("_")[1])
+        label = topic_labels.get(idx, f"Topic {idx+1}")
+        top_words = ", ".join(topics[idx][:8])
+        quarterly_results.append({
+            "Quarter": str(quarter),
+            "Rank": rank,
+            "Topic_Label": label,
+            "Top_Words": top_words
+        })
+
+topics_df = pd.DataFrame(quarterly_results)
 
 # Convert Quarter string to datetime
 try:
@@ -40,7 +59,6 @@ try:
     st.info(f"📅 Topic data spans: {topics_df['Quarter_Date'].min().strftime('%Y-%m-%d')} to {topics_df['Quarter_Date'].max().strftime('%Y-%m-%d')}")
 except Exception as e:
     st.error(f"Error parsing Quarter column: {e}")
-    st.error("Expected format: '2020Q1', '2020Q2', etc.")
     st.stop()
 
 # Topic-sector mapping
@@ -51,12 +69,17 @@ topic_to_companies = {
     "Digital India & E-Governance": ["HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS"],
     "Innovation & Technology": ["TCS.NS", "INFY.NS", "WIPRO.NS", "TECHM.NS"],
     "Finance & Economy": ["HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "AXISBANK.NS"],
-    "Energy & Power": ["RELIANCE.NS", "NTPC.NS", "POWERGRID.NS"],
-    "Manufacturing & Make in India": ["TATASTEEL.NS", "MARUTI.NS", "BAJAJ-AUTO.NS", "M&M.NS"],
+    "Energy & Power": ["RELIANCE.NS", "NTPC.NS", "ADANIPOWER.NS"],
+    "Manufacturing & Make in India": ["TATASTEEL.NS", "MARUTI.NS", "BAJAJ-AUTO.BO", "M&M.NS"],
     "Agriculture & Rural Economy": ["ITC.NS", "UPL.NS", "COROMANDEL.NS"],
     "Infrastructure & Development": ["LT.NS", "ULTRACEMCO.NS"],
     "Healthcare & Pandemic Response": ["SUNPHARMA.NS", "DRREDDY.NS", "CIPLA.NS"],
-    "Social Empowerment & Youth": ["HINDUNILVR.NS", "ITC.NS", "BRITANNIA.NS"],
+    "Social Empowerment & Youth": ["HINDUNILVR.NS", "ITC.NS", "BRITANNIA.BO"],
+    "Education & Learning": ["ITC.NS", "HINDUNILVR.NS"],
+    "Yoga & Wellness": ["APOLLOHOSP.NS", "SUNPHARMA.NS"],
+    "Environment & Water Conservation": ["ITC.NS", "TATASTEEL.NS"],
+    "Culture & Rural Development": ["ITC.NS", "TITAN.NS"],
+    "General / Mixed Theme": ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS"],
 }
 
 tickers = sorted(set(sum(topic_to_companies.values(), [])))
@@ -69,27 +92,28 @@ start_date = topics_df["Quarter_Date"].min()
 end_date = topics_df["Quarter_Date"].max() + pd.DateOffset(months=3)
 
 try:
-    stock_df = yf.download(
-        tickers, 
-        start=start_date, 
-        end=end_date, 
-        interval="3mo",
-        auto_adjust=False,
-        progress=False
-    )["Adj Close"]
-    
-    if isinstance(stock_df, pd.Series):
-        stock_df = stock_df.to_frame(name=tickers[0])
-    
-    stock_df = stock_df.dropna(how="all")
-    
-    missing_tickers = [t for t in tickers if t not in stock_df.columns]
-    if missing_tickers:
-        st.warning(f"⚠️ Could not fetch data for: {', '.join(missing_tickers)}")
-    
-    valid_tickers = [t for t in tickers if t in stock_df.columns]
-    st.success(f"✅ Retrieved {stock_df.shape[0]} quarterly records for {len(valid_tickers)}/{len(tickers)} companies.")
-    st.info(f"📅 Stock data spans: {stock_df.index.min().strftime('%Y-%m-%d')} to {stock_df.index.max().strftime('%Y-%m-%d')}")
+    with st.spinner("Downloading stock data..."):
+        stock_df = yf.download(
+            tickers, 
+            start=start_date, 
+            end=end_date, 
+            interval="3mo",
+            auto_adjust=False,
+            progress=False
+        )["Adj Close"]
+        
+        if isinstance(stock_df, pd.Series):
+            stock_df = stock_df.to_frame(name=tickers[0])
+        
+        stock_df = stock_df.dropna(how="all")
+        
+        missing_tickers = [t for t in tickers if t not in stock_df.columns]
+        if missing_tickers:
+            st.warning(f"⚠️ Could not fetch data for: {', '.join(missing_tickers)}")
+        
+        valid_tickers = [t for t in tickers if t in stock_df.columns]
+        st.success(f"✅ Retrieved {stock_df.shape[0]} quarterly records for {len(valid_tickers)}/{len(tickers)} companies.")
+        st.info(f"📅 Stock data spans: {stock_df.index.min().strftime('%Y-%m-%d')} to {stock_df.index.max().strftime('%Y-%m-%d')}")
     
 except Exception as e:
     st.error(f"Error fetching data: {e}")
@@ -152,9 +176,8 @@ st.markdown("## 🔍 Topic–Sector Correlation Analysis")
 if merged_df.empty:
     st.error("❌ No overlapping quarters found between topic data and stock data.")
     st.write("**Troubleshooting Tips:**")
-    st.write("1. Check that your quarterly_topics.csv has a 'Quarter' column with format like '2020Q1'")
-    st.write("2. Verify the date ranges overlap between topics and stock data")
-    st.write("3. Ensure topic labels match exactly with the predefined categories")
+    st.write("1. Check date ranges overlap between topics and stock data")
+    st.write("2. Ensure topic labels match the predefined categories")
     st.stop()
 
 corr_summary = (
@@ -220,14 +243,28 @@ else:
 
 # Export results
 st.markdown("## 💾 Export Analysis Results")
-csv_data = merged_df.to_csv(index=False)
-st.download_button(
-    "Download Merged Topic–Stock Data (CSV)",
-    data=csv_data,
-    file_name="topic_stock_correlation.csv",
-    mime="text/csv",
-    use_container_width=True
-)
+
+col1, col2 = st.columns(2)
+
+with col1:
+    csv_data = merged_df.to_csv(index=False)
+    st.download_button(
+        "Download Merged Topic–Stock Data (CSV)",
+        data=csv_data,
+        file_name="topic_stock_correlation.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
+
+with col2:
+    quarterly_csv = topics_df.to_csv(index=False)
+    st.download_button(
+        "Download Quarterly Topics Data (CSV)",
+        data=quarterly_csv,
+        file_name="quarterly_topics_from_analysis.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
 
 st.markdown("---")
 st.markdown(
