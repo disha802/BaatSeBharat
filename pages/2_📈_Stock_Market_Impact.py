@@ -69,15 +69,15 @@ st.sidebar.header("🏢 Topic–Sector Mapping")
 topic_to_companies = {
     "Digital India & E-Governance": ["HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS"],
     "Innovation & Technology": ["TCS.NS", "INFY.NS", "WIPRO.NS", "TECHM.NS"],
-    "Finance & Economy": ["HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "AXISBANK.NS"],
-    "Energy & Power": ["RELIANCE.NS", "NTPC.NS", "ADANIPOWER.NS"],
-    "Manufacturing & Make in India": ["TATASTEEL.NS", "MARUTI.NS", "BAJAJ-AUTO.BO", "M&M.NS"],
-    "Agriculture & Rural Economy": ["ITC.NS", "UPL.NS", "COROMANDEL.NS"],
+    "Finance & Economy": ["HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "KOTAKBANK.NS"],
+    "Energy & Power": ["RELIANCE.NS", "NTPC.NS", "POWERGRID.NS"],
+    "Manufacturing & Make in India": ["TATASTEEL.NS", "MARUTI.NS", "TATAMOTORS.NS", "M&M.NS"],
+    "Agriculture & Rural Economy": ["ITC.NS", "UPL.NS", "PIDILITIND.NS"],
     "Infrastructure & Development": ["LT.NS", "ULTRACEMCO.NS"],
     "Healthcare & Pandemic Response": ["SUNPHARMA.NS", "DRREDDY.NS", "CIPLA.NS"],
-    "Social Empowerment & Youth": ["HINDUNILVR.NS", "ITC.NS", "BRITANNIA.BO"],
+    "Social Empowerment & Youth": ["HINDUNILVR.NS", "ITC.NS", "DABUR.NS"],
     "Education & Learning": ["ITC.NS", "HINDUNILVR.NS"],
-    "Yoga & Wellness": ["APOLLOHOSP.NS", "SUNPHARMA.NS"],
+    "Yoga & Wellness": ["SUNPHARMA.NS", "DRREDDY.NS"],
     "Environment & Water Conservation": ["ITC.NS", "TATASTEEL.NS"],
     "Culture & Rural Development": ["ITC.NS", "TITAN.NS"],
     "General / Mixed Theme": ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS"],
@@ -111,15 +111,15 @@ def fetch_stock_data_robust(tickers, start, end, max_retries=3):
         status_text.text(f"Fetching batch {batch_idx+1}/{len(ticker_batches)}: {', '.join(batch)}")
         
         retry_count = 0
-        success = False
+        batch_success = False
         
-        while retry_count < max_retries and not success:
+        while retry_count < max_retries and not batch_success:
             try:
                 # Add delay between requests to avoid rate limiting
                 if batch_idx > 0:
                     time.sleep(2)
                 
-                # Try batch download
+                # Try batch download with suppressed warnings
                 batch_df = yf.download(
                     batch,
                     start=start,
@@ -127,7 +127,8 @@ def fetch_stock_data_robust(tickers, start, end, max_retries=3):
                     auto_adjust=True,
                     progress=False,
                     group_by='ticker',
-                    threads=False  # Disable threading to be more conservative
+                    threads=False,
+                    show_errors=False  # Suppress yfinance error messages
                 )
                 
                 if not batch_df.empty:
@@ -138,22 +139,30 @@ def fetch_stock_data_robust(tickers, start, end, max_retries=3):
                             elif len(batch) == 1:
                                 ticker_data = batch_df['Close']
                             else:
+                                failed.append(ticker)
                                 continue
                             
                             if not ticker_data.empty and not ticker_data.isna().all():
                                 all_data[ticker] = ticker_data
-                        except Exception as e:
-                            st.warning(f"Error processing {ticker}: {str(e)}")
+                            else:
+                                failed.append(ticker)
+                        except Exception:
+                            failed.append(ticker)
                     
-                    success = True
+                    batch_success = True
+                else:
+                    # If batch completely failed, mark all as failed
+                    failed.extend(batch)
+                    batch_success = True  # Don't retry empty batches
                 
             except Exception as e:
                 retry_count += 1
                 if retry_count < max_retries:
                     status_text.text(f"Retry {retry_count}/{max_retries} for batch {batch_idx+1}...")
-                    time.sleep(5 * retry_count)  # Exponential backoff
+                    time.sleep(3 * retry_count)  # Exponential backoff
                 else:
-                    st.warning(f"Failed to fetch batch {batch_idx+1} after {max_retries} retries")
+                    # Mark all in batch as failed after max retries
+                    failed.extend([t for t in batch if t not in all_data])
         
         # Update progress
         progress_bar.progress((batch_idx + 1) / len(ticker_batches))
@@ -161,32 +170,42 @@ def fetch_stock_data_robust(tickers, start, end, max_retries=3):
     progress_bar.empty()
     status_text.empty()
     
-    # Fallback: Try individual downloads for missing tickers
+    # Remove duplicates from failed list
+    failed = list(set(failed))
+    
+    # Fallback: Try individual downloads only for a reasonable number of tickers
     missing = [t for t in tickers if t not in all_data]
     
-    if missing and len(missing) < len(tickers) * 0.5:  # Only if less than 50% failed
+    if missing and len(all_data) > 0 and len(missing) <= 10:  # Only if we have some success and < 10 missing
         st.info(f"Attempting individual downloads for {len(missing)} missing tickers...")
         
+        individual_progress = st.progress(0)
         for idx, ticker in enumerate(missing):
             try:
-                time.sleep(1)  # Rate limiting
+                time.sleep(1.5)  # Rate limiting
+                
                 ticker_obj = yf.Ticker(ticker)
                 hist = ticker_obj.history(start=start, end=end, auto_adjust=True)
                 
-                if not hist.empty and 'Close' in hist.columns:
+                if not hist.empty and 'Close' in hist.columns and not hist['Close'].isna().all():
                     all_data[ticker] = hist['Close']
+                    failed.remove(ticker) if ticker in failed else None
                 else:
+                    if ticker not in failed:
+                        failed.append(ticker)
+                        
+            except Exception:
+                if ticker not in failed:
                     failed.append(ticker)
-            except Exception as e:
-                failed.append(ticker)
             
-            if (idx + 1) % 5 == 0:
-                st.text(f"Progress: {idx+1}/{len(missing)}")
-    else:
-        failed.extend(missing)
+            individual_progress.progress((idx + 1) / len(missing))
+        
+        individual_progress.empty()
+    elif missing:
+        failed.extend([t for t in missing if t not in failed])
     
     if not all_data:
-        return None, failed
+        return None, list(set(failed))
     
     # Combine all data
     combined_df = pd.DataFrame(all_data)
@@ -196,7 +215,11 @@ def fetch_stock_data_robust(tickers, start, end, max_retries=3):
     combined_df = combined_df.resample('Q').last()
     combined_df = combined_df.dropna(how='all')
     
-    return combined_df, failed
+    # Final validation
+    if combined_df.empty or len(combined_df.columns) == 0:
+        return None, list(set(failed))
+    
+    return combined_df, list(set(failed))
 
 # Check for demo mode toggle
 if 'use_demo_mode' not in st.session_state:
@@ -248,23 +271,27 @@ else:
     try:
         stock_df, failed_tickers = fetch_stock_data_robust(tickers, start_date, end_date)
         
-        if stock_df is None or stock_df.empty:
-            st.error("❌ Could not retrieve stock data")
+        if stock_df is None or stock_df.empty or len(stock_df.columns) < 5:  # Need at least 5 valid tickers
+            st.error("❌ Insufficient stock data retrieved")
             
             with st.expander("📋 Possible Causes & Solutions"):
                 st.write("""
                 **Common Issues:**
                 - Yahoo Finance API rate limiting (most common on Streamlit Cloud)
+                - Invalid or delisted ticker symbols
                 - Network connectivity issues
-                - Date range too old (pre-2019 data may be limited)
-                - All tickers invalid or delisted
+                - Date range too old or invalid
                 
                 **What to do:**
-                1. Wait 2-3 minutes and refresh the page
-                2. Try during off-peak hours (early morning IST)
-                3. Use Demo Mode to explore functionality
-                4. Check if tickers are valid on Yahoo Finance
+                1. **Wait 2-3 minutes** and click "Retry Now"
+                2. Try during **off-peak hours** (early morning IST)
+                3. Use **Demo Mode** to explore functionality
+                4. Check the failed tickers list below
                 """)
+                
+                if failed_tickers:
+                    st.write(f"**Failed tickers ({len(failed_tickers)}):**")
+                    st.write(", ".join(failed_tickers))
             
             col1, col2 = st.columns(2)
             with col1:
@@ -278,22 +305,31 @@ else:
             
             st.stop()
         
-        if failed_tickers:
-            st.warning(f"⚠️ Could not fetch data for {len(failed_tickers)}/{len(tickers)} tickers")
-            with st.expander("View failed tickers"):
-                st.write(failed_tickers)
-                st.caption("Note: Some tickers may be invalid, delisted, or temporarily unavailable")
-        
+        # Success!
         valid_tickers = list(stock_df.columns)
+        success_rate = (len(valid_tickers) / len(tickers)) * 100
         
-        st.success(f"✅ Retrieved {stock_df.shape[0]} quarterly records for {len(valid_tickers)}/{len(tickers)} companies")
+        if success_rate >= 70:
+            st.success(f"✅ Retrieved {stock_df.shape[0]} quarterly records for {len(valid_tickers)}/{len(tickers)} companies ({success_rate:.0f}% success)")
+        elif success_rate >= 50:
+            st.warning(f"⚠️ Partial success: {len(valid_tickers)}/{len(tickers)} companies ({success_rate:.0f}% success)")
+        else:
+            st.info(f"ℹ️ Limited data: {len(valid_tickers)}/{len(tickers)} companies ({success_rate:.0f}% success)")
+        
+        if failed_tickers:
+            with st.expander(f"⚠️ Failed tickers: {len(failed_tickers)}/{len(tickers)}"):
+                st.write(", ".join(sorted(failed_tickers)))
+                st.caption("These tickers may be invalid, delisted, or temporarily unavailable")
+        
         st.info(f"📅 Stock data spans: {stock_df.index.min().strftime('%Y-%m-%d')} to {stock_df.index.max().strftime('%Y-%m-%d')}")
         
         # Option to switch to demo mode even after successful fetch
-        with st.expander("🎮 Want to try Demo Mode instead?"):
-            if st.button("Switch to Demo Mode"):
-                st.session_state.use_demo_mode = True
-                st.rerun()
+        if success_rate < 100:
+            with st.expander("💡 Want cleaner results?"):
+                st.write("Demo mode provides complete data for all companies without missing tickers.")
+                if st.button("Switch to Demo Mode"):
+                    st.session_state.use_demo_mode = True
+                    st.rerun()
         
     except Exception as e:
         st.error(f"❌ Error fetching stock data: {str(e)}")
