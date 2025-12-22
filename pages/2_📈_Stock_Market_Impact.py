@@ -5,6 +5,14 @@ import yfinance as yf
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
+import time
+
+# Configure yfinance for cloud deployment
+import requests
+session = requests.Session()
+session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+})
 
 st.set_page_config(
     page_title="Stock Market Impact",
@@ -116,8 +124,15 @@ else:
     # Fetch stock data
     st.info("📊 Fetching stock data from Yahoo Finance... (This may take 30–60s)")
 
-    start_date = topics_df["Quarter_Date"].min()
-    end_date = topics_df["Quarter_Date"].max() + pd.DateOffset(months=3)
+    # Ensure dates are timezone-naive and in proper format
+    start_date = pd.Timestamp(topics_df["Quarter_Date"].min()).tz_localize(None)
+    end_date = pd.Timestamp(topics_df["Quarter_Date"].max()).tz_localize(None) + pd.DateOffset(months=3)
+    
+    # Convert to string format that yfinance prefers
+    start_str = start_date.strftime('%Y-%m-%d')
+    end_str = end_date.strftime('%Y-%m-%d')
+    
+    st.write(f"Debug: Requesting data from {start_str} to {end_str}")
 
 # Add retry with individual ticker downloads
 @st.cache_data(ttl=3600)
