@@ -10,28 +10,30 @@ def db_connection():
     yield conn
     conn.close()
 
-def test_mann_ki_baat_count(db_connection):
-    """Test that we have sufficient Mann Ki Baat episodes"""
+def test_speech_sources_exist(db_connection):
+    """Test that we have both ECB and Fed speeches"""
     cursor = db_connection.cursor()
-    cursor.execute("SELECT COUNT(*) FROM speeches WHERE source='Mann Ki Baat'")
-    count = cursor.fetchone()[0]
+    cursor.execute("SELECT source, COUNT(*) FROM speeches GROUP BY source")
+    counts = dict(cursor.fetchall())
     
-    assert count >= 10, f"Expected at least 100 episodes, got {count}" # Adjusted threshold for initial testing
+    assert 'ECB' in counts, "Missing ECB speeches"
+    assert 'Fed' in counts, "Missing Fed speeches"
+    assert counts['ECB'] > 0, "ECB speech count is zero"
+    assert counts['Fed'] > 0, "Fed speech count is zero"
 
-def test_mann_ki_baat_dates(db_connection):
-    """Test that Mann Ki Baat dates are valid"""
+def test_speech_dates(db_connection):
+    """Test that speech dates are valid and within range"""
     df = pd.read_sql_query(
-        "SELECT date FROM speeches WHERE source='Mann Ki Baat'",
+        "SELECT date, source FROM speeches",
         db_connection
     )
     if not df.empty:
         df['date'] = pd.to_datetime(df['date'])
         
-        # Check date range
-        assert df['date'].min() >= pd.Timestamp('2014-10-01'), "Start date too early"
-        assert df['date'].max() <= pd.Timestamp.now(), "Future dates found"
-        
-        # Check for nulls
+        # Check date range (last 2 years for safety)
+        cutoff = pd.Timestamp.now() - pd.Timedelta(days=730)
+        assert (df['date'] >= cutoff).all(), "Some speeches are older than expected"
+        assert (df['date'] <= pd.Timestamp.now()).all(), "Future dates found"
         assert df['date'].notna().all(), "Null dates found"
 
 def test_market_data_completeness(db_connection):

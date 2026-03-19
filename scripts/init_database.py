@@ -15,15 +15,19 @@ def create_database(db_path='./data/market_rhetoric.db'):
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS speeches (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date DATE NOT NULL,
+            date TEXT,
             source TEXT NOT NULL,
             country TEXT,
+            speaker TEXT,
             title TEXT,
             full_text TEXT,
+            processed_text TEXT,
+            url TEXT,
             language TEXT,
             episode_number INTEGER,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(date, source, speaker, title)
         )
     ''')
     
@@ -123,6 +127,21 @@ def create_database(db_path='./data/market_rhetoric.db'):
             warning_score REAL,
             explanation TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # Table 9: Speech-Market Impact
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS speech_market_impact (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            speech_id INTEGER,
+            ticker TEXT,
+            event_date TEXT,
+            return_t1 REAL,
+            return_t5 REAL,
+            return_t10 REAL,
+            abnormal_return REAL,
+            FOREIGN KEY (speech_id) REFERENCES speeches(id)
         )
     ''')
     
