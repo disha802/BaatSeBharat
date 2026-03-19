@@ -69,14 +69,20 @@ start_date = topics_df["Quarter_Date"].min()
 end_date = topics_df["Quarter_Date"].max() + pd.DateOffset(months=3)
 
 try:
-    stock_df = yf.download(
+    data_download = yf.download(
         tickers, 
         start=start_date, 
         end=end_date, 
         interval="3mo",
         auto_adjust=False,
         progress=False
-    )["Adj Close"]
+    )
+    
+    # Extract Adj Close or Close gracefully
+    if "Adj Close" in data_download.columns.get_level_values(0):
+        stock_df = data_download["Adj Close"]
+    else:
+        stock_df = data_download["Close"]
     
     if isinstance(stock_df, pd.Series):
         stock_df = stock_df.to_frame(name=tickers[0])

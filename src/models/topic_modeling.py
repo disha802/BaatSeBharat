@@ -1,0 +1,229 @@
+from sklearn.decomposition import LatentDirichletAllocation, NMF
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+from bertopic import BERTopic
+import numpy as np
+import pandas as pd
+import sqlite3
+import pickle
+import sys
+import os
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+from src.utils.logger import setup_logger
+
+logger = setup_logger(__name__)
+
+class HybridTopicModeler:
+    """
+    Ensemble topic modeling: LDA + NMF + BERTopic
+    """
+    
+    def __init__(self, n_topics=20):
+        self.n_topics = n_topics
+        
+        # Models
+        self.lda_model = None
+        self.nmf_model = None
+        self.bertopic_model = None
+        
+        # Vectorizers
+        self.count_vectorizer = None
+        self.tfidf_vectorizer = None
+    
+    def fit_lda(self, documents):
+        """Fit LDA model"""
+        logger.info("Fitting LDA model...")
+        
+        # Create vectorizer
+        self.count_vectorizer = CountVectorizer(
+            max_features=5000,
+            min_df=2,
+            max_df=0.8,
+            stop_words='english'
+        )
+        
+        doc_term_matrix = self.count_vectorizer.fit_transform(documents)
+        
+        # Train LDA
+        self.lda_model = LatentDirichletAllocation(
+            n_components=self.n_topics,
+            random_state=42,
+            max_iter=50,
+            learning_method='batch',
+            n_jobs=-1
+        )
+        
+        self.lda_model.fit(doc_term_matrix)
+        
+        logger.info("✓ LDA model fitted")
+        
+        return self.lda_model.transform(doc_term_matrix)
+    
+    def fit_nmf(self, documents):
+        """Fit NMF model"""
+        logger.info("Fitting NMF model...")
+        
+        # Create vectorizer
+        self.tfidf_vectorizer = TfidfVectorizer(
+            max_features=5000,
+            min_df=2,
+            max_df=0.8,
+            stop_words='english'
+        )
+        
+        tfidf_matrix = self.tfidf_vectorizer.fit_transform(documents)
+        
+        # Train NMF
+        self.nmf_model = NMF(
+            n_components=self.n_topics,
+            random_state=42,
+            max_iter=500,
+            init='nndsvda' # Using SVD based initialization
+        )
+        
+        self.nmf_model.fit(tfidf_matrix)
+        
+        logger.info("✓ NMF model fitted")
+        
+        return self.nmf_model.transform(tfidf_matrix)
+    
+    def fit_bertopic(self, documents, embeddings):
+        """Fit BERTopic model"""
+        logger.info("Fitting BERTopic model...")
+        
+        # Initialize BERTopic
+        self.bertopic_model = BERTopic(
+            nr_topics=self.n_topics,
+            calculate_probabilities=True,
+            verbose=False
+        )
+        
+        # Fit
+        topics, probs = self.bertopic_model.fit_transform(documents, embeddings)
+        
+        logger.info("✓ BERTopic model fitted")
+        
+        # Convert to topic distributions
+        topic_dist = np.zeros((len(documents), self.n_topics))
+        for i, (topic, prob_dist) in enumerate(zip(topics, probs)):
+            if topic != -1 and prob_dist is not None:
+                # Handle shapes safely based on bertopic version
+                if isinstance(prob_dist, np.ndarray) and prob_dist.shape == (self.n_topics,):
+                    topic_dist[i] = prob_dist
+        
+        return topic_dist
+    
+    def fit_ensemble(self, documents, embeddings):
+        """
+        Fit all three models
+        """
+        logger.info(f"Training ensemble on {len(documents)} documents...")
+        
+        # Fit each model
+        lda_topics = self.fit_lda(documents)
+        nmf_topics = self.fit_nmf(documents)
+        bert_topics = self.fit_bertopic(documents, embeddings)
+        
+        distributions = {
+            'lda': lda_topics,
+            'nmf': nmf_topics,
+            'bertopic': bert_topics
+        }
+        
+        # Create consensus
+        consensus = self.create_consensus(distributions)
+        
+        logger.info("✓ Ensemble training complete")
+        
+        return consensus, distributions
+    
+    def create_consensus(self, distributions):
+        """
+        Weighted ensemble of topic distributions
+        """
+        consensus = (
+            0.3 * distributions['lda'] +
+            0.3 * distributions['nmf'] +
+            0.4 * distributions['bertopic']
+        )
+        
+        # Normalize
+        consensus = consensus / consensus.sum(axis=1, keepdims=True)
+        
+        return consensus
+    
+    def get_topic_labels(self):
+        """
+        Extract topic labels from each model
+        """
+        labels = {}
+        
+        # LDA topics
+        if self.lda_model and self.count_vectorizer:
+            feature_names = self.count_vectorizer.get_feature_names_out()
+            for topic_idx, topic in enumerate(self.lda_model.components_):
+                top_words_idx = topic.argsort()[-10:][::-1]
+                top_words = [feature_names[i] for i in top_words_idx]
+                labels[f'Topic_{topic_idx}'] = {
+                    'model': 'LDA',
+                    'keywords': top_words
+                }
+        
+        # BERTopic topics
+        if self.bertopic_model:
+            topic_info = self.bertopic_model.get_topic_info()
+            for idx, row in topic_info.iterrows():
+                if row['Topic'] != -1:
+                    labels[f'Topic_{row["Topic"]}']['bertopic_label'] = row['Name']
+        
+        return labels
+    
+    def save_models(self, output_dir='./models/trained'):
+        """Save all models"""
+        import os
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Save each model
+        if self.lda_model:
+            with open(f'{output_dir}/lda_model.pkl', 'wb') as f:
+                pickle.dump(self.lda_model, f)
+            with open(f'{output_dir}/count_vectorizer.pkl', 'wb') as f:
+                pickle.dump(self.count_vectorizer, f)
+        
+        if self.nmf_model:
+            with open(f'{output_dir}/nmf_model.pkl', 'wb') as f:
+                pickle.dump(self.nmf_model, f)
+            with open(f'{output_dir}/tfidf_vectorizer.pkl', 'wb') as f:
+                pickle.dump(self.tfidf_vectorizer, f)
+        
+        if self.bertopic_model:
+            with open(f'{output_dir}/bertopic_model.pkl', 'wb') as f:
+                pickle.dump(self.bertopic_model, f)
+        
+        logger.info(f"✓ Models saved to {output_dir}")
+
+if __name__ == "__main__":
+    # Load data
+    conn = sqlite3.connect('./data/market_rhetoric.db')
+    df = pd.read_sql_query(
+        "SELECT processed_text FROM speeches WHERE processed_text IS NOT NULL",
+        conn
+    )
+    conn.close()
+    
+    documents = df['processed_text'].tolist()
+    
+    if len(documents) > 0:
+        # Load embeddings
+        embeddings_dict = np.load('./data/processed/speech_embeddings.npy', allow_pickle=True).item()
+        embeddings = np.array(list(embeddings_dict.values()))
+        
+        # Train models
+        modeler = HybridTopicModeler(n_topics=20)
+        consensus, distributions = modeler.fit_ensemble(documents, embeddings)
+        
+        # Save
+        modeler.save_models()
+        np.save('./data/processed/topic_distributions.npy', consensus)
+    else:
+        logger.error("No documents to process. Run preprocessing first.")
