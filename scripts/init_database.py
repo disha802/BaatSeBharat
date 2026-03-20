@@ -82,9 +82,10 @@ def create_database(db_path='./data/market_rhetoric.db'):
             speech_id INTEGER NOT NULL,
             topic_id INTEGER NOT NULL,
             probability REAL NOT NULL,
+            model_name TEXT DEFAULT 'combined',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (speech_id) REFERENCES speeches(id),
-            UNIQUE(speech_id, topic_id)
+            UNIQUE(speech_id, topic_id, model_name)
         )
     ''')
     

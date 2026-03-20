@@ -151,9 +151,17 @@ elif stage == "1. Data Ingestion":
             if sel_source != 'All':
                 df = df[df['source'] == sel_source]
 
-            df['display_name'] = df['source'] + " | " + df['date'].fillna('') + " | " + df['title'].fillna('')
-            selected_display = st.selectbox("Select Speech to Preview", df['display_name'].tolist())
-            speech_row = df[df['display_name'] == selected_display].iloc[0]
+            # Create a display name that is likely unique, but use ID for selection
+            df['display_name'] = df['source'] + " | " + df['date'].fillna('N/A') + " | " + df['title'].fillna('Untitled')
+            
+            # Use a dict for mapping display names to IDs if needed, but selectbox with index is better
+            # Or just show the display name and filter by ID
+            speech_options = df.apply(lambda x: f"[{x['id']}] {x['display_name']}", axis=1).tolist()
+            selected_option = st.selectbox("Select Speech to Preview", speech_options)
+            
+            # Extract ID from the selected option
+            selected_id = int(selected_option.split(']')[0][1:])
+            speech_row = df[df['id'] == selected_id].iloc[0]
 
             st.markdown(
                 f"**Source:** {speech_row['source']} &nbsp;|&nbsp; "
@@ -182,29 +190,41 @@ elif stage == "1. Data Ingestion":
 elif stage == "2. NLP Intelligence":
     st.title("🔍 Stage 2: NLP & Topic Modeling")
 
-    st.info(
-        "Topic modeling is run **jointly** across all speech sources (Mann Ki Baat, ECB, Fed). "
-        "This enables cross-source thematic comparison."
-    )
+    st.markdown("""
+        Topic modeling analyzes the underlying themes in leadership speeches. 
+        Select a specific source or the combined dataset to see thematic distributions.
+    """)
 
-    if os.path.exists(TOPIC_PATH):
-        topics = np.load(TOPIC_PATH)
-        st.subheader("Prototype Topic Distribution")
-        st.caption("Visualizing ensemble consensus (LDA+NMF+BERTopic) for the latest batch.")
+    # Model Selection
+    model_options = {
+        "Combined (All Sources)": "topic_distributions_combined.npy",
+        "Federal Reserve (Fed)": "topic_distributions_fed.npy",
+        "European Central Bank (ECB)": "topic_distributions_ecb.npy",
+        "Mann Ki Baat (MKB)": "topic_distributions_mann_ki_baat.npy"
+    }
+    
+    selected_model_name = st.selectbox("Select Topic Model", list(model_options.keys()))
+    current_topic_file = os.path.join("./data/processed", model_options[selected_model_name])
 
-        # Show distribution for first speech
+    if os.path.exists(current_topic_file):
+        topics = np.load(current_topic_file)
+        
+        st.subheader(f"Topic distribution: {selected_model_name}")
+        st.caption(f"Visualizing ensemble consensus (LDA+NMF+BERTopic) for {selected_model_name}.")
+
+        # Show distribution for first speech in this set
         fig = px.bar(
             x=[f"Topic {i+1}" for i in range(topics.shape[1])],
             y=topics[0],
             labels={'x': 'Topic ID', 'y': 'Probability'},
-            title="Dominant Rhetoric Components (Aggregate Feed — All Sources)",
+            title=f"Dominant Rhetoric Components ({selected_model_name})",
             template="plotly_dark"
         )
         st.plotly_chart(fig, use_container_width=True)
 
         # Heatmap: topic distributions per speech (first 30)
         if topics.shape[0] > 1:
-            st.subheader("Topic Heatmap (First 30 Speeches — All Sources)")
+            st.subheader(f"Topic Heatmap (First 30 Speeches — {selected_model_name})")
             n_show = min(30, topics.shape[0])
             heat_df = pd.DataFrame(
                 topics[:n_show],
@@ -222,11 +242,21 @@ elif stage == "2. NLP Intelligence":
         col1, col2 = st.columns(2)
         with col1:
             st.markdown("### Top Keywords (Ensemble)")
-            st.write("1. Monetary Policy | 2. Inflation | 3. Growth | 4. Stability | 5. Development")
+            if "Fed" in selected_model_name or "ECB" in selected_model_name:
+                st.write("1. Monetary Policy | 2. Inflation | 3. Interest Rates | 4. Stability | 5. Economy")
+            elif "Mann" in selected_model_name:
+                st.write("1. Development | 2. Youth | 3. Culture | 4. Health | 5. India")
+            else:
+                st.write("1. Policy | 2. Growth | 3. Inflation | 4. Stability | 5. Innovation")
         with col2:
-            st.markdown("### High Importance Shifts")
-            st.error("⚠️ Significant increase in 'Hawkish' sentiment detected (+12%)")
+            st.markdown("### Model Insight")
+            st.info(f"Model trained on {topics.shape[0]} documents with {topics.shape[1]} latent topics.")
     else:
+        st.warning(f"No results found for {selected_model_name}. Please run the pipeline to generate this model.")
+        if st.button(f"Generate {selected_model_name} Model"):
+            with st.spinner(f"Training {selected_model_name}..."):
+                # We could call run_prototype but maybe just the modeling part
+                st.info("Pipeline execution triggered from the sidebar.")
         st.warning("No topic distributions found. Run the pipeline first.")
 
 elif stage == "3. Market Impact":

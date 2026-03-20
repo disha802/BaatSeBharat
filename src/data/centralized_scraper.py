@@ -81,8 +81,8 @@ class CentralizedSpeechScraper:
         conn.commit()
         conn.close()
 
-    def save_speeches(self, speeches):
-        """Save a list of speech dictionaries to the database"""
+    def save_speeches(self, speeches, transcript_dir=None, file_prefix='speech'):
+        """Save a list of speech dictionaries to the database and optionally to disk"""
         if not speeches:
             logger.warning("No speeches to save.")
             return 0
@@ -90,8 +90,13 @@ class CentralizedSpeechScraper:
         conn = sqlite3.connect(self.db_path)
         saved_count = 0
         
+        # Ensure transcript directory exists if provided
+        if transcript_dir:
+            os.makedirs(transcript_dir, exist_ok=True)
+            
         for speech in speeches:
             try:
+                # 1. Save to Database
                 conn.execute('''
                     INSERT OR REPLACE INTO speeches 
                     (date, source, country, speaker, title, full_text, url)
@@ -106,12 +111,25 @@ class CentralizedSpeechScraper:
                     speech.get('url')
                 ))
                 saved_count += 1
+                
+                # 2. Save to individual .txt file if transcript_dir provided
+                if transcript_dir and speech.get('full_text'):
+                    safe_title = re.sub(r'[^\w\s-]', '', speech.get('title', 'untitled')).strip().replace(' ', '_')[:60]
+                    date_prefix = speech.get('date', 'unknown_date').replace('-', '')
+                    filename = f"{file_prefix}_{date_prefix}_{safe_title}.txt"
+                    fpath = os.path.join(transcript_dir, filename)
+                    
+                    with open(fpath, 'w', encoding='utf-8') as f:
+                        # Header: Title | Date | Speaker
+                        f.write(f"{speech.get('title', 'N/A')} | {speech.get('date', 'N/A')} | {speech.get('speaker', 'N/A')}\n\n")
+                        f.write(speech.get('full_text'))
+                        
             except Exception as e:
                 logger.error(f"Error saving speech: {e}")
                 
         conn.commit()
         conn.close()
-        logger.info(f"Saved {saved_count} speeches to database.")
+        logger.info(f"Saved {saved_count} speeches to database{' and files' if transcript_dir else ''}.")
         return saved_count
 
     # --- ECB Logic (Adapted from ecb.py) ---
@@ -167,37 +185,63 @@ class CentralizedSpeechScraper:
                 speeches.append(content)
             time.sleep(1)
             
-        return self.save_speeches(speeches)
+        return self.save_speeches(speeches, transcript_dir='./ecb_transcripts', file_prefix='ecb')
 
     def _scrape_ecb_content(self, url):
-        """Scrapes individual ECB speech content"""
+        """Scrapes individual ECB speech content with improved metadata extraction"""
         try:
-            headers = {'User-Agent': 'Mozilla/5.0'}
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
             response = requests.get(url, headers=headers, timeout=15)
             soup = BeautifulSoup(response.content, 'html.parser')
 
-            title = soup.find('h1', class_='title').get_text(strip=True) if soup.find('h1', class_='title') else 'N/A'
-            date_tag = soup.find('p', class_='date')
+            # Improve title extraction
+            title_tag = soup.find('h1', class_='title') or soup.find('h1', class_='section-title') or soup.find('h1')
+            title = title_tag.get_text(strip=True) if title_tag else 'N/A'
+            
+            # Improve date extraction (ECB often uses <p class="date"> or <div class="date">)
+            date_tag = soup.find('p', class_='date') or soup.find('div', class_='date') or soup.find('span', class_='date')
             date_str = date_tag.get_text(strip=True) if date_tag else 'N/A'
             
-            # Convert date_str to YYYY-MM-DD
-            try:
-                parsed_date = datetime.strptime(date_str, '%d %B %Y').strftime('%Y-%m-%d')
-            except:
-                parsed_date = date_str
+            # Fallback date extraction from URL if scraping fails
+            # URL pattern: /press/key/date/2026/html/ecb.sp260226...
+            parsed_date = 'N/A'
+            if date_str != 'N/A':
+                try:
+                    parsed_date = datetime.strptime(date_str, '%d %B %Y').strftime('%Y-%m-%d')
+                except:
+                    # Try other formats
+                    for fmt in ['%d %b %Y', '%B %d, %Y', '%Y-%m-%d']:
+                        try:
+                            parsed_date = datetime.strptime(date_str, fmt).strftime('%Y-%m-%d')
+                            break
+                        except: continue
+            
+            if parsed_date == 'N/A':
+                date_match = re.search(r'sp(\d{2})(\d{2})(\d{2})', url)
+                if date_match:
+                    year, month, day = date_match.groups()
+                    parsed_date = f"20{year}-{month}-{day}"
 
+            # Improve speaker extraction
             speaker = 'N/A'
-            subtitle_tag = soup.find('p', class_='subtitle')
+            subtitle_tag = soup.find('p', class_='subtitle') or soup.find('div', class_='subtitle')
             if subtitle_tag:
                 speaker_text = subtitle_tag.get_text(strip=True)
                 if 'by' in speaker_text:
                     speaker = speaker_text.split('by')[-1].split(',')[0].strip()
+            
+            # If speaker still N/A, look for speaker in the start of the content or in specific tags
+            if speaker == 'N/A':
+                meta_speaker = soup.find('meta', {'name': 'author'})
+                if meta_speaker:
+                    speaker = meta_speaker.get('content', 'N/A')
 
-            content_div = soup.find('div', class_='ecb-pressContent') or soup.find('main')
+            content_div = soup.find('div', class_='ecb-pressContent') or soup.find('article') or soup.find('main')
             full_text = ""
             if content_div:
                 for p in content_div.find_all('p'):
-                    if not p.find_parent('div', class_='contact'):
+                    # Skip contact info at bottom
+                    if not p.find_parent('div', class_='contact') and not 'class' in p.attrs or 'ecb-pressContent' in str(p.find_parent()):
                         full_text += p.get_text(strip=True) + "\n\n"
 
             return {
@@ -236,11 +280,15 @@ class CentralizedSpeechScraper:
             
             # Extract links and metadata
             items = await page.query_selector_all(".row")
+            logger.info(f"Found {len(items)} items with class .row on Fed page.")
             for item in items:
                 try:
                     date_tag = await item.query_selector("time.itemDate")
-                    if not date_tag: continue
+                    if not date_tag: 
+                        # logger.debug("Skipping row: no time.itemDate")
+                        continue
                     date_str = await date_tag.inner_text()
+                    # logger.info(f"Found Fed speech date: {date_str}")
                     
                     try:
                         dt = datetime.strptime(date_str.strip(), '%m/%d/%Y')
@@ -278,9 +326,11 @@ class CentralizedSpeechScraper:
                     'country': 'USA'
                 })
                 speeches.append(link_info)
+                logger.info(f"Successfully scraped Fed speech: {link_info['title']}")
             time.sleep(1)
             
-        return self.save_speeches(speeches)
+        logger.info(f"Total Fed speeches collected: {len(speeches)}")
+        return self.save_speeches(speeches, transcript_dir='./fed_transcripts', file_prefix='fed')
 
     # --- Mann Ki Baat Logic ---
 

@@ -140,50 +140,57 @@ def run_prototype():
     conn.commit()
     logger.info(f"✓ Preprocessed {processed_count} speeches.")
 
-    # 4. Unified Topic Modeling on ALL speeches together
-    logger.info("Step 4: Topic Modeling on combined dataset (all sources)...")
-    df_ready = pd.read_sql_query(
-        "SELECT id, processed_text FROM speeches WHERE processed_text IS NOT NULL AND processed_text != ''",
-        conn
-    )
-    docs = df_ready['processed_text'].tolist()
-    speech_ids = df_ready['id'].tolist()
-
-    if len(docs) >= 2:
+    # 4. Multi-Source Topic Modeling
+    logger.info("Step 4: Multi-Source Topic Modeling...")
+    
+    def train_and_save_model(name, query):
+        logger.info(f"Training Topic Model: {name}...")
+        df_subset = pd.read_sql_query(query, conn)
+        docs = df_subset['processed_text'].tolist()
+        speech_ids = df_subset['id'].tolist()
+        
+        if len(docs) < 2:
+            logger.warning(f"Not enough data for model '{name}' ({len(docs)} documents).")
+            return
+            
         n_topics = min(10, len(docs))
         modeler = HybridTopicModeler(n_topics=n_topics)
-        embeddings = np.random.rand(len(docs), 384)  # Prototype: mock embeddings
+        embeddings = np.random.rand(len(docs), 384) # mock embeddings
+        
         try:
             os.makedirs('./data/processed', exist_ok=True)
             consensus, dists = modeler.fit_ensemble(docs, embeddings)
-            np.save('./data/processed/topic_distributions_prototype.npy', consensus)
-            logger.info("✓ Topic distributions saved to .npy file.")
-
-            # Persist per-speech topic distributions to DB
-            try:
-                conn.execute("DELETE FROM topic_distributions")
-            except Exception:
-                pass
-
+            
+            # Save to npy
+            filename = f'topic_distributions_{name.lower().replace(" ", "_")}.npy'
+            np.save(f'./data/processed/{filename}', consensus)
+            logger.info(f"✓ Saved {filename}")
+            
+            # Persist to DB
+            conn.execute("DELETE FROM topic_distributions WHERE model_name = ?", (name,))
             for i, speech_id in enumerate(speech_ids):
-                if i >= len(consensus):
-                    break
+                if i >= len(consensus): break
                 for topic_id, prob in enumerate(consensus[i]):
-                    try:
-                        conn.execute('''
-                            INSERT OR REPLACE INTO topic_distributions
-                            (speech_id, topic_id, probability)
-                            VALUES (?, ?, ?)
-                        ''', (int(speech_id), topic_id, float(prob)))
-                    except Exception as e:
-                        logger.warning(f"Topic dist insert: {e}")
-
+                    conn.execute('''
+                        INSERT OR REPLACE INTO topic_distributions 
+                        (speech_id, topic_id, probability, model_name)
+                        VALUES (?, ?, ?, ?)
+                    ''', (int(speech_id), topic_id, float(prob), name))
             conn.commit()
-            logger.info("✓ Per-speech topic distributions saved to DB.")
+            logger.info(f"✓ Persisted {name} model to DB.")
         except Exception as e:
-            logger.warning(f"Topic modeling failed: {e}")
-    else:
-        logger.warning("Not enough data for topic modeling.")
+            logger.error(f"Failed training {name}: {e}")
+
+    # Define tasks
+    model_tasks = [
+        ("Combined", "SELECT id, processed_text FROM speeches WHERE processed_text IS NOT NULL AND processed_text != ''"),
+        ("Fed", "SELECT id, processed_text FROM speeches WHERE source='Fed' AND processed_text IS NOT NULL AND processed_text != ''"),
+        ("ECB", "SELECT id, processed_text FROM speeches WHERE source='ECB' AND processed_text IS NOT NULL AND processed_text != ''"),
+        ("Mann Ki Baat", "SELECT id, processed_text FROM speeches WHERE source='Mann Ki Baat' AND processed_text IS NOT NULL AND processed_text != ''")
+    ]
+    
+    for name, query in model_tasks:
+        train_and_save_model(name, query)
 
     conn.close()
 
