@@ -14,6 +14,7 @@ from src.data.centralized_scraper import CentralizedSpeechScraper
 from src.data.market_data_downloader import MarketDataDownloader
 from src.features.text_preprocessing import TextPreprocessor
 from src.models.topic_modeling import HybridTopicModeler
+from src.utils.db_utils import get_db_connection
 
 logger = setup_logger("Prototype_V1")
 
@@ -26,7 +27,7 @@ def compute_speech_market_impact():
     for every market ticker. Saves results to speech_market_impact table.
     """
     logger.info("Computing speech-market impact...")
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection(DB_PATH)
 
     speeches_df = pd.read_sql_query(
         "SELECT id, date, source FROM speeches WHERE date IS NOT NULL", conn
@@ -94,10 +95,11 @@ def run_prototype():
 
     # 1. Centralized Data Ingestion — all 3 sources
     logger.info("Step 1: Ingesting multi-source speech data (MKB + ECB + Fed)...")
-    scraper = CentralizedSpeechScraper()
+    scraper = CentralizedSpeechScraper(db_path=DB_PATH)
+    scraper._ensure_db_exists() # Ensure all tables (including topic_distributions) exist
 
     try:
-        asyncio.run(scraper.scrape_all(days_back=730))
+        asyncio.run(scraper.scrape_all(days_back=3650))
     except Exception as e:
         logger.error(f"Incomplete ingestion: {e}")
 
@@ -114,7 +116,7 @@ def run_prototype():
     # 3. Preprocessing all speeches
     logger.info("Step 3: Preprocessing speeches...")
     preprocessor = TextPreprocessor()
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection(DB_PATH)
 
     try:
         conn.execute("ALTER TABLE speeches ADD COLUMN processed_text TEXT")

@@ -14,6 +14,7 @@ from playwright.async_api import async_playwright
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.utils.logger import setup_logger
+from src.utils.db_utils import get_db_connection
 
 logger = setup_logger(__name__)
 
@@ -26,8 +27,7 @@ class CentralizedSpeechScraper:
         
     def _ensure_db_exists(self):
         """Ensure the database and tables exist"""
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        conn = sqlite3.connect(self.db_path)
+        conn = get_db_connection(self.db_path)
         cursor = conn.cursor()
         
         # Speeches table
@@ -42,9 +42,16 @@ class CentralizedSpeechScraper:
                 full_text TEXT,
                 url TEXT,
                 processed_text TEXT,
+                doc_type TEXT DEFAULT 'Speech',
                 UNIQUE(date, source, speaker, title)
             )
         ''')
+        
+        # Migration: add doc_type column if it doesn't exist
+        try:
+            cursor.execute("ALTER TABLE speeches ADD COLUMN doc_type TEXT DEFAULT 'Speech'")
+        except Exception:
+            pass
         
         # Market data table (re-ensuring based on market_data_downloader.py)
         cursor.execute('''
@@ -78,6 +85,24 @@ class CentralizedSpeechScraper:
             )
         ''')
         
+        # Table: Topic Distributions
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS topic_distributions (
+                speech_id INTEGER,
+                topic_id INTEGER,
+                probability REAL,
+                model_name TEXT,
+                PRIMARY KEY (speech_id, topic_id),
+                FOREIGN KEY (speech_id) REFERENCES speeches(id)
+            )
+        ''')
+        
+        # Migration: add model_name column if it doesn't exist yet
+        try:
+            cursor.execute("ALTER TABLE topic_distributions ADD COLUMN model_name TEXT")
+        except Exception:
+            pass  # Column already exists
+        
         conn.commit()
         conn.close()
 
@@ -87,7 +112,7 @@ class CentralizedSpeechScraper:
             logger.warning("No speeches to save.")
             return 0
             
-        conn = sqlite3.connect(self.db_path)
+        conn = get_db_connection(self.db_path)
         saved_count = 0
         
         # Ensure transcript directory exists if provided
@@ -98,9 +123,9 @@ class CentralizedSpeechScraper:
             try:
                 # 1. Save to Database
                 conn.execute('''
-                    INSERT OR REPLACE INTO speeches 
-                    (date, source, country, speaker, title, full_text, url)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT OR IGNORE INTO speeches 
+                    (date, source, country, speaker, title, full_text, url, doc_type)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     speech.get('date'),
                     speech.get('source'),
@@ -108,20 +133,25 @@ class CentralizedSpeechScraper:
                     speech.get('speaker'),
                     speech.get('title'),
                     speech.get('full_text'),
-                    speech.get('url')
+                    speech.get('url'),
+                    speech.get('doc_type', 'Speech')
                 ))
                 saved_count += 1
                 
                 # 2. Save to individual .txt file if transcript_dir provided
                 if transcript_dir and speech.get('full_text'):
+                    # Sanitize all parts of filename
                     safe_title = re.sub(r'[^\w\s-]', '', speech.get('title', 'untitled')).strip().replace(' ', '_')[:60]
-                    date_prefix = speech.get('date', 'unknown_date').replace('-', '')
+                    date_prefix = str(speech.get('date', 'unknown_date')).replace('-', '').replace('/', '_').replace(' ', '_')
+                    
                     filename = f"{file_prefix}_{date_prefix}_{safe_title}.txt"
+                    # Final safety check: remove any remaining / or \
+                    filename = filename.replace('/', '_').replace('\\', '_')
                     fpath = os.path.join(transcript_dir, filename)
                     
                     with open(fpath, 'w', encoding='utf-8') as f:
-                        # Header: Title | Date | Speaker
-                        f.write(f"{speech.get('title', 'N/A')} | {speech.get('date', 'N/A')} | {speech.get('speaker', 'N/A')}\n\n")
+                        # Header: Title | Date | Speaker | Type
+                        f.write(f"{speech.get('title', 'N/A')} | {speech.get('date', 'N/A')} | {speech.get('speaker', 'N/A')} | {speech.get('doc_type', 'Speech')}\n\n")
                         f.write(speech.get('full_text'))
                         
             except Exception as e:
@@ -134,58 +164,68 @@ class CentralizedSpeechScraper:
 
     # --- ECB Logic (Adapted from ecb.py) ---
     
-    async def scrape_ecb(self, days_back=730):
-        """Scrape ECB speeches"""
+    async def scrape_ecb(self, days_back=3650):
+        """Scrape ECB speeches (multi-year archiving supported)"""
         logger.info(f"Scraping ECB speeches from last {days_back} days...")
         
+        current_year = datetime.now().year
         cutoff_date = datetime.now() - timedelta(days=days_back)
-        speech_urls = set()
-        url = "https://www.ecb.europa.eu/press/key/html/index.en.html"
+        start_year = cutoff_date.year
         
-        speeches = []
+        speech_urls = set()
         
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
-            await page.goto(url, wait_until="load")
-            await asyncio.sleep(5)
-            try:
-                accept_button = await page.query_selector("button:has-text('Accept')")
-                if accept_button: await accept_button.click()
-            except: pass
             
-            # Scroll to load content (infinite scroll)
-            logger.info("Scrolling to load ECB speeches...")
-            for i in range(10):  # More scrolls
-                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                await asyncio.sleep(3)
+            for year in range(current_year, start_year - 1, -1):
+                url = f"https://www.ecb.europa.eu/press/pubbydate/html/index.en.html?name_of_publication=Speech&year={year}"
+                logger.info(f"Visiting ECB archive: {url}")
+                
+                try:
+                    await page.goto(url, wait_until="load", timeout=45000)
+                    await asyncio.sleep(3)
+                    
+                    # Ensure content is loaded
+                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    await asyncio.sleep(2)
+                    
+                    links = await page.evaluate("Array.from(document.querySelectorAll('a')).map(a => a.href)")
+                    
+                    year_urls = 0
+                    for href in links:
+                        if href and '/press/key/date/' in href and 'sp' in href:
+                            # URL often contains date pattern spYYMMDD
+                            date_match = re.search(r'sp(\d{2})(\d{2})(\d{2})', href)
+                            if date_match:
+                                y, m, d = date_match.groups()
+                                try:
+                                    pub_date = datetime(2000 + int(y), int(m), int(d))
+                                    if pub_date >= cutoff_date:
+                                        if href not in speech_urls:
+                                            speech_urls.add(href)
+                                            year_urls += 1
+                                except ValueError:
+                                    continue # Skip malformed dates (e.g. sp190000)
+                    logger.info(f"Year {year}: Discovered {year_urls} ECB speeches.")
+                except Exception as e:
+                    logger.error(f"Error visiting ECB archive {year}: {e}")
             
-            links = await page.evaluate("Array.from(document.querySelectorAll('a')).map(a => a.href)")
-            logger.info(f"Discovered {len(links)} links on ECB page.")
-            
-            for href in links:
-                if href and '/press/key/date/' in href and 'sp' in href:
-                    # New pattern: ecb.sp260309~6cfdbd02b7.en.html or old pattern: sp260309.en.html
-                    # Relaxed check for ends with .en.html as it might have parameters
-                    date_match = re.search(r'sp(\d{2})(\d{2})(\d{2})', href)
-                    if date_match:
-                        year, month, day = date_match.groups()
-                        pub_date = datetime(2000 + int(year), int(month), int(day))
-                        if pub_date >= cutoff_date:
-                            speech_urls.add(href)
-            
-            logger.info(f"Filtered {len(speech_urls)} ECB speech URLs.")
             await browser.close()
 
-        for url in speech_urls:
+        logger.info(f"Total filtered ECB speech URLs: {len(speech_urls)}")
+        
+        speeches = []
+        for i, url in enumerate(speech_urls):
+            if i % 10 == 0: logger.info(f"Scraping content {i+1}/{len(speech_urls)}...")
             content = self._scrape_ecb_content(url)
             if content:
                 content['source'] = 'ECB'
                 content['country'] = 'Europe'
                 speeches.append(content)
-            time.sleep(1)
+            time.sleep(0.5)
             
-        return self.save_speeches(speeches, transcript_dir='./ecb_transcripts', file_prefix='ecb')
+        return self.save_speeches(speeches, transcript_dir='./transcripts/ecb', file_prefix='ecb')
 
     def _scrape_ecb_content(self, url):
         """Scrapes individual ECB speech content with improved metadata extraction"""
@@ -257,13 +297,14 @@ class CentralizedSpeechScraper:
 
     # --- Fed Logic (Simplified from us_federalreserve.py - using requests instead of Selenium for speed if possible) ---
     
-    async def scrape_fed(self, days_back=730):
-        """Scrape US Federal Reserve speeches using Playwright for dynamic content"""
+    async def scrape_fed(self, days_back=3650):
+        """Scrape US Federal Reserve speeches (multi-year supported)"""
         logger.info(f"Scraping Fed speeches from last {days_back} days...")
         
         base_url = "https://www.federalreserve.gov"
-        url = f"{base_url}/newsevents/speeches.htm"
+        current_year = datetime.now().year
         cutoff_date = datetime.now() - timedelta(days=days_back)
+        start_year = cutoff_date.year
         
         speeches = []
         speech_links = []
@@ -271,53 +312,81 @@ class CentralizedSpeechScraper:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
-            await page.goto(url, wait_until="load")
-            await asyncio.sleep(5)
-            try:
-                await page.wait_for_selector(".itemTitle", timeout=10000)
-            except:
-                logger.warning("Timeout waiting for Fed speech list.")
             
-            # Extract links and metadata
-            items = await page.query_selector_all(".row")
-            logger.info(f"Found {len(items)} items with class .row on Fed page.")
-            for item in items:
+            for year in range(current_year, start_year - 1, -1):
+                # Fed speech archive pattern: [year]-speeches.htm or landing page for current
+                if year == datetime.now().year:
+                    url = f"{base_url}/newsevents/speeches.htm"
+                else:
+                    url = f"{base_url}/newsevents/{year}-speeches.htm"
+                
+                logger.info(f"Visiting Fed archive: {url}")
                 try:
-                    date_tag = await item.query_selector("time.itemDate")
-                    if not date_tag: 
-                        # logger.debug("Skipping row: no time.itemDate")
-                        continue
-                    date_str = await date_tag.inner_text()
-                    # logger.info(f"Found Fed speech date: {date_str}")
+                    await page.goto(url, wait_until="load", timeout=30000)
+                    await asyncio.sleep(3)
                     
-                    try:
-                        dt = datetime.strptime(date_str.strip(), '%m/%d/%Y')
-                    except:
-                        continue
-                        
-                    if dt < cutoff_date: continue
-                    
-                    title_link = await item.query_selector(".itemTitle a")
-                    if not title_link: continue
-                    
-                    href = await title_link.get_attribute("href")
-                    title = await title_link.inner_text()
-                    
-                    speaker_tag = await item.query_selector(".news__speaker")
-                    speaker = await speaker_tag.inner_text() if speaker_tag else 'N/A'
-                    
-                    speech_links.append({
-                        'url': base_url + href if href.startswith('/') else href,
-                        'date': dt.strftime('%Y-%m-%d'),
-                        'title': title.strip(),
-                        'speaker': speaker.strip()
-                    })
+                    # Extract links and metadata
+                    items = await page.query_selector_all(".row")
+                    year_links = 0
+                    for item in items:
+                        try:
+                            # Fed archive structure: .eventlist__time and .eventlist__event
+                            date_tag = await item.query_selector(".eventlist__time time")
+                            if not date_tag:
+                                date_tag = await item.query_selector("time.itemDate")
+                            if not date_tag: 
+                                date_tag = await item.query_selector("time") # Final fallback
+                                
+                            if not date_tag: continue
+                            
+                            date_str = (await date_tag.inner_text()).strip()
+                            try:
+                                dt = datetime.strptime(date_str, '%m/%d/%Y')
+                            except ValueError:
+                                try:
+                                    dt = datetime.strptime(date_str, '%B %d, %Y')
+                                except: continue
+                                
+                            if dt < cutoff_date: continue
+                            
+                            # Different layouts use different link containers
+                            link_tag = await item.query_selector(".eventlist__event a")
+                            if not link_tag:
+                                link_tag = await item.query_selector(".itemTitle a")
+                            if not link_tag: continue
+                            
+                            href = await link_tag.get_attribute("href")
+                            if not href: continue
+                            
+                            # Filter based on type
+                            if '/speeches' in url and '/newsevents/speech/' not in href:
+                                continue
+                                    
+                            title = (await link_tag.inner_text()).strip()
+                            speaker_tag = await item.query_selector(".news__speaker")
+                            speaker = (await speaker_tag.inner_text()).strip() if speaker_tag else 'N/A'
+                            
+                            full_url = base_url + href if href.startswith('/') else href
+                            if full_url not in [l['url'] for l in speech_links]:
+                                speech_links.append({
+                                    'url': full_url,
+                                    'date': dt.strftime('%Y-%m-%d'),
+                                    'title': title,
+                                    'speaker': speaker,
+                                    'source': 'Fed',
+                                    'doc_type': 'Speech' if '/speeches' in url else 'Press Release'
+                                })
+                                year_links += 1
+                        except: continue
+                    logger.info(f"Year {year}: Discovered {year_links} Fed documents.")
                 except Exception as e:
-                    logger.error(f"Error parsing Fed list item: {e}")
+                    logger.error(f"Error visiting Fed archive {year}: {e}")
             
             await browser.close()
 
-        for link_info in speech_links:
+        logger.info(f"Total discovered Fed speech links: {len(speech_links)}")
+        for i, link_info in enumerate(speech_links):
+            if i % 10 == 0: logger.info(f"Scraping content {i+1}/{len(speech_links)}...")
             content = self._scrape_fed_content(link_info['url'])
             if content:
                 link_info.update(content)
@@ -326,11 +395,10 @@ class CentralizedSpeechScraper:
                     'country': 'USA'
                 })
                 speeches.append(link_info)
-                logger.info(f"Successfully scraped Fed speech: {link_info['title']}")
-            time.sleep(1)
+            time.sleep(0.5)
             
         logger.info(f"Total Fed speeches collected: {len(speeches)}")
-        return self.save_speeches(speeches, transcript_dir='./fed_transcripts', file_prefix='fed')
+        return self.save_speeches(speeches, transcript_dir='./transcripts/fed', file_prefix='fed')
 
     # --- Mann Ki Baat Logic ---
 
@@ -342,7 +410,7 @@ class CentralizedSpeechScraper:
             suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')
         return f"{n}{suffix}"
 
-    def scrape_mann_ki_baat(self, transcripts_dir='./mann_ki_baat_transcripts'):
+    def scrape_mann_ki_baat(self, transcripts_dir='./transcripts/mann_ki_baat'):
         """
         Load Mann Ki Baat transcripts from already-scraped local .txt files.
         Falls back to web scraping for any missing episodes.
@@ -400,13 +468,103 @@ class CentralizedSpeechScraper:
                 logger.error(f"Error loading {fpath}: {e}")
 
         logger.info(f"Mann Ki Baat: loaded {len(speeches)} episodes from local files.")
-        return self.save_speeches(speeches)
+        return self.save_speeches(speeches, transcript_dir=transcripts_dir, file_prefix='mann_ki_baat')
 
-    async def scrape_all(self, days_back=365):
-        """Scrape all sources: ECB, Fed and Mann Ki Baat"""
-        self.scrape_mann_ki_baat()  # Removed max_episodes to match signature
+    async def scrape_ecb_press_releases(self, days_back=3650):
+        """Scrape ECB press releases"""
+        logger.info(f"Scraping ECB press releases from last {days_back} days...")
+        current_year = datetime.now().year
+        cutoff_date = datetime.now() - timedelta(days=days_back)
+        start_year = cutoff_date.year
+        
+        pr_urls = set()
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            for year in range(current_year, start_year - 1, -1):
+                url = f"https://www.ecb.europa.eu/press/pubbydate/html/index.en.html?name_of_publication=Press%20release&year={year}"
+                logger.info(f"Visiting ECB PR archive: {url}")
+                try:
+                    await page.goto(url, wait_until="load", timeout=45000)
+                    await asyncio.sleep(3)
+                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    await asyncio.sleep(2)
+                    links = await page.evaluate("Array.from(document.querySelectorAll('a')).map(a => a.href)")
+                    for href in links:
+                        if href and '/press/pr/date/' in href and 'pr' in href and '.en.html' in href:
+                            pr_urls.add(href)
+                except: continue
+            await browser.close()
+            
+        speeches = []
+        for url in pr_urls:
+            content = self._scrape_ecb_content(url) # Reusing content scraper
+            if content:
+                content.update({'source': 'ECB', 'country': 'Europe', 'doc_type': 'Press Release'})
+                speeches.append(content)
+            time.sleep(0.5)
+        return self.save_speeches(speeches, transcript_dir='./transcripts/ecb', file_prefix='ecb')
+
+    async def scrape_fed_press_releases(self, days_back=3650):
+        """Scrape Fed press releases"""
+        logger.info(f"Scraping Fed press releases from last {days_back} days...")
+        base_url = "https://www.federalreserve.gov"
+        current_year = datetime.now().year
+        cutoff_date = datetime.now() - timedelta(days=days_back)
+        start_year = cutoff_date.year
+        
+        pr_links = []
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            for year in range(current_year, start_year - 1, -1):
+                if year == datetime.now().year:
+                    url = f"{base_url}/newsevents/pressreleases.htm"
+                elif year >= 2016:
+                    url = f"{base_url}/newsevents/pressreleases/{year}-press.htm"
+                else:
+                    url = f"{base_url}/newsevents/pressreleases/{year}all.htm"
+                
+                logger.info(f"Visiting Fed PR archive: {url}")
+                try:
+                    await page.goto(url, wait_until="load", timeout=30000)
+                    items = await page.query_selector_all(".row")
+                    for item in items:
+                        try:
+                            date_tag = await item.query_selector("time.itemDate")
+                            if not date_tag: continue
+                            dt = datetime.strptime((await date_tag.inner_text()).strip(), '%m/%d/%Y')
+                            if dt < cutoff_date: continue
+                            title_link = await item.query_selector(".itemTitle a")
+                            if not title_link: continue
+                            href = await title_link.get_attribute("href")
+                            pr_links.append({
+                                'url': base_url + href if href.startswith('/') else href,
+                                'date': dt.strftime('%Y-%m-%d'),
+                                'title': (await title_link.inner_text()).strip(),
+                                'doc_type': 'Press Release'
+                            })
+                        except: continue
+                except: continue
+            await browser.close()
+            
+        speeches = []
+        for link_info in pr_links:
+            content = self._scrape_fed_content(link_info['url'])
+            if content:
+                link_info.update(content)
+                link_info.update({'source': 'Fed', 'country': 'USA'})
+                speeches.append(link_info)
+            time.sleep(0.5)
+        return self.save_speeches(speeches, transcript_dir='./transcripts/fed', file_prefix='fed')
+
+    async def scrape_all(self, days_back=3650):
+        """Scrape all sources: ECB, Fed and Mann Ki Baat (Speeches + PRs)"""
+        self.scrape_mann_ki_baat()
         await self.scrape_ecb(days_back=days_back)
+        await self.scrape_ecb_press_releases(days_back=days_back)
         await self.scrape_fed(days_back=days_back)
+        await self.scrape_fed_press_releases(days_back=days_back)
 
     def _scrape_fed_content(self, url):
         """Scrapes individual Fed speech content"""

@@ -9,6 +9,7 @@ import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from src.utils.logger import setup_logger
+from src.utils.db_utils import get_db_connection
 
 logger = setup_logger(__name__)
 
@@ -88,7 +89,7 @@ class MarketDataDownloader:
         """Save market data to database"""
         logger.info("Saving market data to database...")
         
-        conn = sqlite3.connect(db_path)
+        conn = get_db_connection(db_path)
         
         saved_count = 0
         

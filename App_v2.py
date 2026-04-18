@@ -12,6 +12,7 @@ import subprocess
 sys.path.append(os.path.join(os.getcwd(), 'src'))
 
 from utils.logger import setup_logger
+from utils.db_utils import get_db_connection
 
 st.set_page_config(
     page_title="Rhetoric & Markets Intelligence",
@@ -43,7 +44,7 @@ SOURCE_COLORS = {
 
 def load_db_stats():
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection(DB_PATH)
         speech_count = pd.read_sql_query("SELECT COUNT(*) as count FROM speeches", conn)['count'][0]
         market_count = pd.read_sql_query("SELECT COUNT(*) as count FROM market_data", conn)['count'][0]
         conn.close()
@@ -53,7 +54,7 @@ def load_db_stats():
 
 def load_source_breakdown():
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection(DB_PATH)
         df = pd.read_sql_query("SELECT source, COUNT(*) as count FROM speeches GROUP BY source", conn)
         conn.close()
         return df
@@ -125,7 +126,7 @@ if stage == "Executive Summary":
     st.markdown("---")
     st.subheader("Live Pipeline Feed")
     if s_count > 0:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection(DB_PATH)
         recent = pd.read_sql_query(
             "SELECT date, source, speaker, title FROM speeches ORDER BY date DESC LIMIT 10", conn
         )
@@ -140,7 +141,7 @@ elif stage == "1. Data Ingestion":
     tab1, tab2 = st.tabs(["Speeches (Text)", "Market (Numerical)"])
 
     with tab1:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection(DB_PATH)
         df = pd.read_sql_query(
             "SELECT id, date, source, speaker, title, full_text FROM speeches ORDER BY date DESC", conn
         )
@@ -174,7 +175,7 @@ elif stage == "1. Data Ingestion":
         conn.close()
 
     with tab2:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection(DB_PATH)
         df_m = pd.read_sql_query("SELECT date, ticker, close FROM market_data", conn)
         if not df_m.empty:
             df_m['date'] = pd.to_datetime(df_m['date'])
@@ -262,7 +263,7 @@ elif stage == "2. NLP Intelligence":
 elif stage == "3. Market Impact":
     st.title("📈 Stage 3: Speech Impact on Markets")
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection(DB_PATH)
 
     # Load speeches with impact data
     impact_df = pd.read_sql_query('''
@@ -313,11 +314,12 @@ elif stage == "3. Market Impact":
                 )
             # Invisible scatter just for legend
             if len(src_dates):
+                # Ensure we have a date-indexed series for nearest-neighbor lookup
+                market_series = ticker_market.set_index('date')['close']
                 fig.add_trace(go.Scatter(
                     x=src_dates,
-                    y=ticker_market[ticker_market['date'].isin(src_dates)]['close']
-                      .reindex(pd.DatetimeIndex(src_dates), method='nearest').values
-                      if not ticker_market.empty else [None]*len(src_dates),
+                    y=market_series.reindex(pd.DatetimeIndex(src_dates), method='nearest').values
+                    if not ticker_market.empty else [None]*len(src_dates),
                     mode='markers',
                     marker=dict(color=color, size=8, symbol='triangle-down'),
                     name=src,
@@ -363,7 +365,6 @@ elif stage == "3. Market Impact":
             (impact_df['ticker'] == sel_ticker) & impact_df['abnormal_return'].notna()
         ].groupby('source')['abnormal_return'].mean().reset_index()
         avg_df.columns = ['Source', 'Avg Abnormal 5D Return']
-
         fig_bar = px.bar(
             avg_df, x='Source', y='Avg Abnormal 5D Return',
             color='Source', color_discrete_map=SOURCE_COLORS,
@@ -378,24 +379,158 @@ elif stage == "3. Market Impact":
             "tend to coincide with above-average 5-day forward returns."
         )
 
+        # --- Topic-Market Alignment (Fix #6) ---
+        st.markdown("---")
+        st.subheader("🎯 Topic-Market Correlation Analysis")
+        st.markdown("""
+            This section aligns leadership rhetoric (topics) with market performance to identify 
+            which themes drive the highest returns.
+        """)
+        
+        # Join impact with topic distributions (for the 'Combined' model)
+        conn_topic = get_db_connection(DB_PATH)
+        topic_impact_query = '''
+            SELECT 
+                td.topic_id,
+                AVG(i.return_t5) as avg_ret_t5,
+                AVG(i.abnormal_return) as avg_abnormal,
+                COUNT(i.id) as speech_count
+            FROM topic_distributions td
+            JOIN speech_market_impact i ON td.speech_id = i.speech_id
+            WHERE td.model_name = 'Combined' AND i.ticker = ?
+            GROUP BY td.topic_id
+            HAVING td.probability > 0.3 -- Only count if topic is significant
+            ORDER BY avg_abnormal DESC
+        '''
+        topic_impact_df = pd.read_sql_query(topic_impact_query, conn_topic, params=(sel_ticker,))
+        conn_topic.close()
+
+        if topic_impact_df.empty:
+            st.warning("No topic-alignment data available. Ensure topic modeling has been run for 'Combined' model.")
+        else:
+            topic_impact_df['topic_label'] = topic_impact_df['topic_id'].apply(lambda x: f"Topic {x+1}")
+            
+            fig_topic = px.bar(
+                topic_impact_df, 
+                x='topic_label', 
+                y='avg_abnormal',
+                color='avg_abnormal',
+                color_continuous_scale='RdYlGn',
+                title=f"Avg 5D Abnormal Return by Dominant Topic ({sel_ticker})",
+                labels={'avg_abnormal': 'Avg Abnormal Return (5D)', 'topic_label': 'Topic'},
+                template="plotly_dark",
+                hover_data=['speech_count']
+            )
+            fig_topic.add_hline(y=0, line_dash="dash", line_color="gray")
+            st.plotly_chart(fig_topic, use_container_width=True)
+            
+            best_topic = topic_impact_df.iloc[0]
+            st.success(
+                f"**Alpha Driver:** **{best_topic['topic_label']}** is currently the most impactful theme for {sel_ticker}, "
+                f"coinciding with a **{best_topic['avg_abnormal']*100:.2f}%** average 5-day abnormal return."
+            )
+
 elif stage == "4. Fusion & Prediction":
-    st.title("🔀 Stage 4: Prediction & Superimposition")
+    st.title("🔀 Stage 4: Market Regime Prediction")
 
-    st.subheader("Market Regime Forecast")
-    dates = pd.date_range(end=pd.Timestamp.now(), periods=10)
-    prices = [17000 + i*15 for i in range(10)]
-    pred_v1 = [p + np.random.normal(0, 10) for p in prices]
-
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=dates, y=prices, name="Actual Price", mode='lines+markers'))
-    fig.add_trace(go.Scatter(x=dates, y=pred_v1, name="Prototype Prediction",
-                             line=dict(color='cyan', width=2)))
-
-    fig.update_layout(template="plotly_dark", height=500)
-    st.plotly_chart(fig, use_container_width=True)
-
-    st.subheader("💡 Predictive Insight")
-    st.success(
-        "**Alpha Signal:** Rhetorical focus on 'Structural Reforms' showed a 0.82 correlation "
-        "with 10-day forward returns in the Banking sector."
+    conn4 = get_db_connection(DB_PATH)
+    mdf = pd.read_sql_query("SELECT date, ticker, close FROM market_data ORDER BY date", conn4)
+    speech_src = pd.read_sql_query(
+        "SELECT date, source FROM speeches WHERE date IS NOT NULL", conn4
     )
+    conn4.close()
+
+    if mdf.empty:
+        st.warning("No market data found. Run the pipeline first from the sidebar.")
+    else:
+        mdf['date'] = pd.to_datetime(mdf['date'])
+        speech_src['date'] = pd.to_datetime(speech_src['date'])
+
+        tickers4 = sorted(mdf['ticker'].unique().tolist())
+        sel_ticker4 = st.selectbox("Select Ticker for Regime Analysis", tickers4)
+
+        tdf = mdf[mdf['ticker'] == sel_ticker4].sort_values('date').copy()
+        tdf['MA20'] = tdf['close'].rolling(20).mean()
+        tdf['MA60'] = tdf['close'].rolling(60).mean()
+        tdf['regime'] = np.where(tdf['MA20'] > tdf['MA60'], 1, -1)
+
+        # Last 365 days
+        cutoff = pd.Timestamp.now() - pd.Timedelta(days=365)
+        tdf = tdf[tdf['date'] >= cutoff]
+
+        fig4 = go.Figure()
+        # Price line
+        fig4.add_trace(go.Scatter(
+            x=tdf['date'], y=tdf['close'],
+            name=sel_ticker4, mode='lines',
+            line=dict(color='#8b949e', width=1.5)
+        ))
+        # MA20
+        fig4.add_trace(go.Scatter(
+            x=tdf['date'], y=tdf['MA20'],
+            name='MA-20', mode='lines',
+            line=dict(color='#f0883e', width=1.2, dash='dot')
+        ))
+        # MA60
+        fig4.add_trace(go.Scatter(
+            x=tdf['date'], y=tdf['MA60'],
+            name='MA-60', mode='lines',
+            line=dict(color='#388bfd', width=1.2, dash='dot')
+        ))
+
+        # Shade regime bands
+        bull = tdf[tdf['regime'] == 1]
+        bear = tdf[tdf['regime'] == -1]
+        if not bull.empty:
+            fig4.add_trace(go.Scatter(
+                x=pd.concat([bull['date'], bull['date'].iloc[::-1]]),
+                y=pd.concat([bull['close'], pd.Series([tdf['close'].min()]*len(bull))]),
+                fill='toself', fillcolor='rgba(63,185,80,0.08)',
+                line=dict(width=0), name='Bullish Regime', showlegend=True
+            ))
+        if not bear.empty:
+            fig4.add_trace(go.Scatter(
+                x=pd.concat([bear['date'], bear['date'].iloc[::-1]]),
+                y=pd.concat([bear['close'], pd.Series([tdf['close'].min()]*len(bear))]),
+                fill='toself', fillcolor='rgba(240,136,62,0.08)',
+                line=dict(width=0), name='Bearish Regime', showlegend=True
+            ))
+
+        fig4.update_layout(
+            template="plotly_dark", height=500,
+            title=f"{sel_ticker4} — Price & Market Regime (MA20 vs MA60)",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+        st.plotly_chart(fig4, use_container_width=True)
+
+        # Current regime
+        last_regime = tdf['regime'].iloc[-1] if not tdf.empty else 0
+        if last_regime == 1:
+            st.success("📈 **Current Regime: BULLISH** — MA-20 is above MA-60. Momentum is positive.")
+        else:
+            st.warning("📉 **Current Regime: BEARISH** — MA-20 is below MA-60. Caution advised.")
+
+        # Speech event overlay on regime
+        st.markdown("---")
+        st.subheader("📣 Speech Events vs Regime")
+        col_r1, col_r2 = st.columns(2)
+        for src, color in SOURCE_COLORS.items():
+            src_dates = speech_src[speech_src['source'] == src]['date']
+            src_in_range = src_dates[src_dates >= cutoff]
+            bullish_events = 0
+            for d in src_in_range:
+                closest = tdf.iloc[(tdf['date'] - d).abs().argsort()[:1]]
+                if not closest.empty and closest['regime'].values[0] == 1:
+                    bullish_events += 1
+            pct = (bullish_events / len(src_in_range) * 100) if len(src_in_range) > 0 else 0
+            with col_r1:
+                st.metric(
+                    f"{src} — Bullish at Speech",
+                    f"{bullish_events}/{len(src_in_range)}",
+                    f"{pct:.0f}% bullish"
+                )
+
+        st.info(
+            "💡 **Regime Signal:** Green bands = MA-20 > MA-60 (Bullish). Orange bands = MA-20 < MA-60 (Bearish). "
+            "Speech events during bullish regimes tend to reinforce market momentum."
+        )
