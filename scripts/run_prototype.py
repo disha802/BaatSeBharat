@@ -98,8 +98,10 @@ def run_prototype():
     scraper = CentralizedSpeechScraper(db_path=DB_PATH)
     scraper._ensure_db_exists() # Ensure all tables (including topic_distributions) exist
 
+    # Change default from 3650 (10yrs) to 30 days for routine updates
+    # Use days_back=3650 for initial historical load
     try:
-        asyncio.run(scraper.scrape_all(days_back=3650))
+        asyncio.run(scraper.scrape_all(days_back=30))
     except Exception as e:
         logger.error(f"Incomplete ingestion: {e}")
 
@@ -123,8 +125,9 @@ def run_prototype():
     except Exception:
         pass  # Column already exists
 
+    # OPTIMIZATION: Only process speeches that haven't been processed yet
     df_speeches = pd.read_sql_query(
-        "SELECT id, full_text FROM speeches WHERE full_text IS NOT NULL AND full_text != ''", conn
+        "SELECT id, full_text FROM speeches WHERE (processed_text IS NULL OR processed_text = '') AND full_text IS NOT NULL AND full_text != ''", conn
     )
 
     processed_count = 0
@@ -140,7 +143,7 @@ def run_prototype():
             logger.warning(f"Preprocess error id={row['id']}: {e}")
 
     conn.commit()
-    logger.info(f"✓ Preprocessed {processed_count} speeches.")
+    logger.info(f"Done: Preprocessed {processed_count} speeches.")
 
     # 4. Multi-Source Topic Modeling
     logger.info("Step 4: Multi-Source Topic Modeling...")
@@ -179,7 +182,15 @@ def run_prototype():
                         VALUES (?, ?, ?, ?)
                     ''', (int(speech_id), topic_id, float(prob), name))
             conn.commit()
-            logger.info(f"✓ Persisted {name} model to DB.")
+            logger.info(f"Done: Persisted {name} model to DB.")
+            
+            # Save keywords for UI
+            topic_labels = modeler.get_topic_labels()
+            import json
+            labels_file = f'topic_labels_{name.lower().replace(" ", "_")}.json'
+            with open(f'./data/processed/{labels_file}', 'w') as f:
+                json.dump(topic_labels, f)
+            logger.info(f"Done: Saved keywords to {labels_file}")
         except Exception as e:
             logger.error(f"Failed training {name}: {e}")
 
@@ -188,7 +199,8 @@ def run_prototype():
         ("Combined", "SELECT id, processed_text FROM speeches WHERE processed_text IS NOT NULL AND processed_text != ''"),
         ("Fed", "SELECT id, processed_text FROM speeches WHERE source='Fed' AND processed_text IS NOT NULL AND processed_text != ''"),
         ("ECB", "SELECT id, processed_text FROM speeches WHERE source='ECB' AND processed_text IS NOT NULL AND processed_text != ''"),
-        ("Mann Ki Baat", "SELECT id, processed_text FROM speeches WHERE source='Mann Ki Baat' AND processed_text IS NOT NULL AND processed_text != ''")
+        ("Mann Ki Baat", "SELECT id, processed_text FROM speeches WHERE source='Mann Ki Baat' AND processed_text IS NOT NULL AND processed_text != ''"),
+        ("Prototype", "SELECT id, processed_text FROM speeches WHERE processed_text IS NOT NULL AND processed_text != '' LIMIT 10") # For backward compatibility with App_v2
     ]
     
     for name, query in model_tasks:

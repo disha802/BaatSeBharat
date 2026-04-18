@@ -7,6 +7,8 @@ import numpy as np
 import os
 import sys
 import subprocess
+from datetime import datetime
+import json
 
 # Add src to path
 sys.path.append(os.path.join(os.getcwd(), 'src'))
@@ -70,14 +72,26 @@ stage = st.sidebar.radio(
 )
 
 st.sidebar.markdown("---")
-if st.sidebar.button("🚀 Run Prototype Pipeline"):
+# Check if models exist and get timestamp
+model_path = "./data/processed/topic_distributions_combined.npy"
+models_exist = os.path.exists(model_path)
+btn_label = "🚀 Run Pipeline Again" if models_exist else "🚀 Run Pipeline"
+
+if st.sidebar.button(btn_label):
     with st.spinner("Executing End-to-End Prototype (MKB + ECB + Fed)..."):
         result = subprocess.run([sys.executable, "scripts/run_prototype.py"], capture_output=True, text=True)
         if result.returncode == 0:
             st.sidebar.success("Pipeline Executed Successfully!")
             st.rerun()
         else:
-            st.sidebar.error(f"Error: {result.stderr[-2000:]}")
+            st.sidebar.error("Execution failed. Check data consistency.")
+            with open("logs/pipeline_error.log", "w") as f:
+                f.write(result.stderr)
+
+if models_exist:
+    mtime = os.path.getmtime(model_path)
+    last_update = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
+    st.sidebar.caption(f"Last Intelligence Update: {last_update}")
 
 st.sidebar.info("System Status: **Active (Patch V1.2 — Unified)**")
 
@@ -243,21 +257,33 @@ elif stage == "2. NLP Intelligence":
         col1, col2 = st.columns(2)
         with col1:
             st.markdown("### Top Keywords (Ensemble)")
-            if "Fed" in selected_model_name or "ECB" in selected_model_name:
-                st.write("1. Monetary Policy | 2. Inflation | 3. Interest Rates | 4. Stability | 5. Economy")
-            elif "Mann" in selected_model_name:
-                st.write("1. Development | 2. Youth | 3. Culture | 4. Health | 5. India")
+            # Load actual keywords if available
+            labels_file = os.path.join("./data/processed", f"topic_labels_{selected_model_name.lower().replace(' (all sources)', '').replace('federal reserve (fed)', 'fed').replace('european central bank (ecb)', 'ecb').replace('mann ki baat (mkb)', 'mann_ki_baat').replace(' ', '_')}.json")
+            
+            if os.path.exists(labels_file):
+                import json
+                with open(labels_file, 'r') as f:
+                    labels_data = json.load(f)
+                
+                # Show keywords for top topics
+                for i in range(min(5, topics.shape[1])):
+                    topic_key = f"Topic_{i}"
+                    if topic_key in labels_data:
+                        keywords = ", ".join(labels_data[topic_key]['keywords'][:5])
+                        st.write(f"**T{i+1}:** {keywords}")
             else:
-                st.write("1. Policy | 2. Growth | 3. Inflation | 4. Stability | 5. Innovation")
+                if "Fed" in selected_model_name or "ECB" in selected_model_name:
+                    st.write("1. Monetary Policy | 2. Inflation | 3. Interest Rates | 4. Stability | 5. Economy")
+                elif "Mann" in selected_model_name:
+                    st.write("1. Development | 2. Youth | 3. Culture | 4. Health | 5. India")
+                else:
+                    st.write("1. Policy | 2. Growth | 3. Inflation | 4. Stability | 5. Innovation")
         with col2:
             st.markdown("### Model Insight")
             st.info(f"Model trained on {topics.shape[0]} documents with {topics.shape[1]} latent topics.")
     else:
-        st.warning(f"No results found for {selected_model_name}. Please run the pipeline to generate this model.")
-        if st.button(f"Generate {selected_model_name} Model"):
-            with st.spinner(f"Training {selected_model_name}..."):
-                # We could call run_prototype but maybe just the modeling part
-                st.info("Pipeline execution triggered from the sidebar.")
+        st.warning(f"No results found for {selected_model_name}.")
+        st.info("💡 Use the **Run Pipeline** button in the sidebar to generate results.")
         st.warning("No topic distributions found. Run the pipeline first.")
 
 elif stage == "3. Market Impact":
@@ -399,14 +425,29 @@ elif stage == "3. Market Impact":
             JOIN speech_market_impact i ON td.speech_id = i.speech_id
             WHERE td.model_name = 'Combined' AND i.ticker = ?
             GROUP BY td.topic_id
-            HAVING td.probability > 0.3 -- Only count if topic is significant
+            -- Removing the heavy threshold to avoid empty results for rare topics
+            -- HAVING td.probability > 0.3 
             ORDER BY avg_abnormal DESC
         '''
         topic_impact_df = pd.read_sql_query(topic_impact_query, conn_topic, params=(sel_ticker,))
         conn_topic.close()
 
         if topic_impact_df.empty:
-            st.warning("No topic-alignment data available. Ensure topic modeling has been run for 'Combined' model.")
+            st.warning("No precise topic-alignment data available for this ticker. Showing overall topic performance instead.")
+            # Fallback: Overall average across all tickers or most similar data
+            topic_impact_query_fallback = '''
+                SELECT 
+                    td.topic_id,
+                    AVG(i.return_t5) as avg_ret_t5,
+                    AVG(i.abnormal_return) as avg_abnormal,
+                    COUNT(i.id) as speech_count
+                FROM topic_distributions td
+                JOIN speech_market_impact i ON td.speech_id = i.speech_id
+                WHERE td.model_name = 'Combined'
+                GROUP BY td.topic_id
+                ORDER BY avg_abnormal DESC
+            '''
+            topic_impact_df = pd.read_sql_query(topic_impact_query_fallback, conn_topic)
         else:
             topic_impact_df['topic_label'] = topic_impact_df['topic_id'].apply(lambda x: f"Topic {x+1}")
             
@@ -443,8 +484,12 @@ elif stage == "4. Fusion & Prediction":
     if mdf.empty:
         st.warning("No market data found. Run the pipeline first from the sidebar.")
     else:
-        mdf['date'] = pd.to_datetime(mdf['date'])
-        speech_src['date'] = pd.to_datetime(speech_src['date'])
+        mdf['date'] = pd.to_datetime(mdf['date'], errors='coerce')
+        speech_src['date'] = pd.to_datetime(speech_src['date'], errors='coerce')
+        
+        # Keep only valid dates for regime analysis
+        mdf = mdf.dropna(subset=['date'])
+        speech_src = speech_src.dropna(subset=['date'])
 
         tickers4 = sorted(mdf['ticker'].unique().tolist())
         sel_ticker4 = st.selectbox("Select Ticker for Regime Analysis", tickers4)

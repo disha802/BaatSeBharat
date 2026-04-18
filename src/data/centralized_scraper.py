@@ -560,6 +560,7 @@ class CentralizedSpeechScraper:
 
     async def scrape_all(self, days_back=3650):
         """Scrape all sources: ECB, Fed and Mann Ki Baat (Speeches + PRs)"""
+        # MKB load from local files is fast, so we keep it as is or could skip if data exists
         self.scrape_mann_ki_baat()
         await self.scrape_ecb(days_back=days_back)
         await self.scrape_ecb_press_releases(days_back=days_back)
@@ -594,5 +595,8 @@ class CentralizedSpeechScraper:
 if __name__ == "__main__":
     scraper = CentralizedSpeechScraper()
     # To run: python centralized_scraper.py
-    asyncio.run(scraper.scrape_ecb(days_back=30))
-    scraper.scrape_fed(days_back=30)
+    async def run_test():
+        await scraper.scrape_ecb(days_back=30)
+        await scraper.scrape_fed(days_back=30)
+        
+    asyncio.run(run_test())
