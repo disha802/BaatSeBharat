@@ -7,6 +7,8 @@ import sqlite3
 import pickle
 import sys
 import os
+import torch
+from transformers import pipeline
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from src.utils.logger import setup_logger
@@ -201,6 +203,35 @@ class HybridTopicModeler:
                 pickle.dump(self.bertopic_model, f)
         
         logger.info(f"✓ Models saved to {output_dir}")
+
+class ZeroShotLabeler:
+    """
+    Zero-shot topic classification using BART large MNLI
+    Maps raw topic distributions/keywords to high-level policy domains.
+    """
+    def __init__(self, model_name="facebook/bart-large-mnli", device=None):
+        if device is None:
+            self.device = 0 if torch.cuda.is_available() else -1
+        else:
+            self.device = device
+            
+        logger.info(f"Initializing ZeroShotLabeler with {model_name}...")
+        self.classifier = pipeline("zero-shot-classification", model=model_name, device=self.device)
+        self.candidate_labels = [
+            "Infrastructure", "Manufacturing", "Digital Economy", "Welfare", 
+            "Monetary Policy", "Inflation", "Geopolitics", "Agriculture",
+            "Healthcare", "Education", "Culture", "Taxation"
+        ]
+        
+    def classify_keywords(self, topic_keywords):
+        """
+        Takes a list of keywords and maps it to a high level category
+        """
+        text = " ".join(topic_keywords)
+        result = self.classifier(text, self.candidate_labels)
+        
+        # Return top label
+        return result['labels'][0], result['scores'][0]
 
 if __name__ == "__main__":
     # Load data

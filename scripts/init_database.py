@@ -80,20 +80,26 @@ def create_database(db_path='./data/market_rhetoric.db'):
         CREATE TABLE IF NOT EXISTS topic_distributions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             speech_id INTEGER NOT NULL,
+            segment_type TEXT DEFAULT 'episode', -- 'sentence', 'paragraph', 'episode'
+            segment_index INTEGER DEFAULT 0,
             topic_id INTEGER NOT NULL,
             probability REAL NOT NULL,
             model_name TEXT DEFAULT 'combined',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (speech_id) REFERENCES speeches(id),
-            UNIQUE(speech_id, topic_id, model_name)
+            UNIQUE(speech_id, segment_type, segment_index, topic_id, model_name)
         )
     ''')
     
-    # Table 6: Sentiment Scores
+    # Table 6: Sentiment Scores (FinBERT style)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS sentiment_scores (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             speech_id INTEGER NOT NULL,
+            segment_type TEXT DEFAULT 'episode',
+            segment_index INTEGER DEFAULT 0,
+            optimism_intensity REAL,
+            risk_awareness REAL,
             positive REAL,
             negative REAL,
             neutral REAL,
@@ -142,6 +148,7 @@ def create_database(db_path='./data/market_rhetoric.db'):
             return_t5 REAL,
             return_t10 REAL,
             abnormal_return REAL,
+            pwm_shock_score REAL,
             FOREIGN KEY (speech_id) REFERENCES speeches(id)
         )
     ''')
@@ -156,7 +163,7 @@ def create_database(db_path='./data/market_rhetoric.db'):
     conn.commit()
     conn.close()
     
-    print(f"✓ Database created successfully at: {db_path}")
+    print(f"Database created successfully at: {db_path}")
     return db_path
 
 if __name__ == "__main__":

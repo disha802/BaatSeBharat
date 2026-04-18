@@ -12,8 +12,13 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from src.utils.logger import setup_logger
 from src.data.centralized_scraper import CentralizedSpeechScraper
 from src.data.market_data_downloader import MarketDataDownloader
+from src.data.vix_downloader import VIXDownloader
 from src.features.text_preprocessing import TextPreprocessor
-from src.models.topic_modeling import HybridTopicModeler
+from src.models.sentiment_overlay import SentimentOverlay
+from src.models.topic_modeling import HybridTopicModeler, ZeroShotLabeler
+from src.models.market_modeling import MarketModeler
+from src.models.fusion_engine import FusionEngine
+from src.models.causal_validation import CausalValidator
 from src.utils.db_utils import get_db_connection
 
 logger = setup_logger("Prototype_V1")
@@ -106,7 +111,7 @@ def run_prototype():
         logger.error(f"Incomplete ingestion: {e}")
 
     # 2. Market Data
-    logger.info("Step 2: Downloading market data...")
+    logger.info("Step 2: Downloading market & macro data...")
     try:
         downloader = MarketDataDownloader()
         market_df = downloader.download_all_data()
@@ -114,6 +119,15 @@ def run_prototype():
             downloader.save_to_database(market_df)
     except Exception as e:
         logger.error(f"Market data error: {e}")
+
+    # 2b. Download VIX explicitly
+    try:
+        vix_dl = VIXDownloader()
+        vix_df = vix_dl.download_vix()
+        if vix_df is not None:
+            vix_dl.save_to_database(vix_df)
+    except Exception as e:
+        logger.error(f"VIX download error: {e}")
 
     # 3. Preprocessing all speeches
     logger.info("Step 3: Preprocessing speeches...")
@@ -130,6 +144,13 @@ def run_prototype():
         "SELECT id, full_text FROM speeches WHERE (processed_text IS NULL OR processed_text = '') AND full_text IS NOT NULL AND full_text != ''", conn
     )
 
+    # Initialize Sentiment overlay
+    try:
+        sentiment_analyzer = SentimentOverlay()
+    except Exception as e:
+        logger.warning(f"Could not initialize FinBERT, skipping sentiment: {e}")
+        sentiment_analyzer = None
+
     processed_count = 0
     for _, row in df_speeches.iterrows():
         try:
@@ -138,12 +159,30 @@ def run_prototype():
                 "UPDATE speeches SET processed_text = ? WHERE id = ?",
                 (processed, row['id'])
             )
+            
+            # Sentiment Overlay using FinBERT
+            if sentiment_analyzer:
+                # To prevent memory issues with long text, we just use the first 512 tokens implicitly in analyze_sentiment
+                scores = sentiment_analyzer.analyze_sentiment(row['full_text'])
+                
+                # Check if entry already exists
+                existing = pd.read_sql_query(f"SELECT id FROM sentiment_scores WHERE speech_id={row['id']} AND segment_type='episode'", conn)
+                if existing.empty:
+                    conn.execute('''
+                        INSERT INTO sentiment_scores 
+                        (speech_id, segment_type, optimism_intensity, risk_awareness, positive, negative, neutral, compound)
+                        VALUES (?, 'episode', ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        row['id'], scores['optimism_intensity'], scores['risk_awareness'],
+                        scores['positive'], scores['negative'], scores['neutral'], scores['compound']
+                    ))
+
             processed_count += 1
         except Exception as e:
-            logger.warning(f"Preprocess error id={row['id']}: {e}")
+            logger.warning(f"Preprocess/Sentiment error id={row['id']}: {e}")
 
     conn.commit()
-    logger.info(f"Done: Preprocessed {processed_count} speeches.")
+    logger.info(f"Done: Preprocessed and sentiment-analyzed {processed_count} speeches.")
 
     # 4. Multi-Source Topic Modeling
     logger.info("Step 4: Multi-Source Topic Modeling...")
@@ -206,7 +245,39 @@ def run_prototype():
     for name, query in model_tasks:
         train_and_save_model(name, query)
 
+    # Label topics using ZeroShot
+    logger.info("Applying Zero-Shot Classification to Topics...")
+    try:
+        labeler = ZeroShotLabeler()
+        for name, _ in model_tasks:
+            # We would technically load labels and map them. Simple check ensures it doesn't crash if model misses
+            labels_file = f'topic_labels_{name.lower().replace(" ", "_")}.json'
+            if os.path.exists(f'./data/processed/{labels_file}'):
+                import json
+                with open(f'./data/processed/{labels_file}', 'r') as f:
+                    topic_labels = json.load(f)
+                
+                for t_key, t_val in topic_labels.items():
+                    if 'keywords' in t_val:
+                        top_label, score = labeler.classify_keywords(t_val['keywords'])
+                        t_val['zero_shot_domain'] = top_label
+                        t_val['zero_shot_score'] = score
+                
+                with open(f'./data/processed/{labels_file}', 'w') as f:
+                    json.dump(topic_labels, f, indent=2)
+        logger.info("Zero-Shot Classification complete.")
+    except Exception as e:
+        logger.warning(f"ZeroShot labeling failed: {e}")
+
     conn.close()
+
+    # 4.5 Compute ASBN / CPTM Market Regimes
+    logger.info("Step 4.5: Computing ASBN & CPTM-F Regimes...")
+    try:
+        market_modeler = MarketModeler()
+        market_modeler.compute_regime_metrics()
+    except Exception as e:
+        logger.error(f"Market Modeling failed: {e}")
 
     # 5. Compute Speech-Market Impact
     logger.info("Step 5: Computing speech-event market impact...")
@@ -214,6 +285,22 @@ def run_prototype():
         compute_speech_market_impact()
     except Exception as e:
         logger.error(f"Impact computation failed: {e}")
+
+    # 6. Fusion Engine (PWM Shock Modeling)
+    logger.info("Step 6: Running Fusion Engine (PWM Shocks)...")
+    try:
+        fusion = FusionEngine()
+        fusion.compute_all_shocks()
+    except Exception as e:
+        logger.error(f"Fusion / PWM Shock failed: {e}")
+
+    # 7. Causal Validation
+    logger.info("Step 7: Granger Causality Validation...")
+    try:
+        validator = CausalValidator()
+        validator.test_causality()
+    except Exception as e:
+        logger.error(f"Granger Causality failed: {e}")
 
     logger.info("=== Prototype V1.2 Run Complete ===")
     return True
