@@ -21,13 +21,8 @@ class TextEmbeddingGenerator:
     def __init__(self):
         logger.info("Loading embedding models...")
         
-        # SBERT for English (384-dim)
+        # SBERT for all (384-dim)
         self.sbert_model = SentenceTransformer('all-MiniLM-L6-v2')
-        
-        # IndicBERT for Hindi (768-dim)
-        self.indic_tokenizer = AutoTokenizer.frompretrained('ai4bharat/indic-bert')
-        self.indic_model = AutoModel.from_pretrained('ai4bharat/indic-bert')
-        self.indic_model.eval()
         
         logger.info("✓ Models loaded successfully")
     
@@ -48,39 +43,21 @@ class TextEmbeddingGenerator:
         logger.info(f"✓ Generated embeddings with shape {embeddings.shape}")
         return embeddings
     
-    def embed_indicbert(self, texts, batch_size=16, show_progress=True):
+    def embed_multilingual(self, texts, batch_size=32, show_progress=True):
         """
-        Generate IndicBERT embeddings for Hindi
-        Returns: numpy array of shape (n_texts, 768)
+        Generate Multilingual SBERT embeddings
+        Returns: numpy array of shape (n_texts, 384)
         """
-        logger.info(f"Generating IndicBERT embeddings for {len(texts)} texts...")
+        logger.info(f"Generating Multilingual SBERT embeddings for {len(texts)} texts...")
         
-        all_embeddings = []
+        embeddings = self.multilingual_model.encode(
+            texts,
+            batch_size=batch_size,
+            show_progress_bar=show_progress,
+            convert_to_numpy=True
+        )
         
-        # Process in batches
-        for i in tqdm(range(0, len(texts), batch_size), disable=not show_progress):
-            batch = texts[i:i+batch_size]
-            
-            # Tokenize
-            encoded = self.indic_tokenizer(
-                batch,
-                padding=True,
-                truncation=True,
-                max_length=512,
-                return_tensors='pt'
-            )
-            
-            # Generate embeddings
-            with torch.no_grad():
-                outputs = self.indic_model(**encoded)
-                # Use CLS token
-                batch_embeddings = outputs.last_hidden_state[:, 0, :].numpy()
-            
-            all_embeddings.append(batch_embeddings)
-        
-        embeddings = np.vstack(all_embeddings)
         logger.info(f"✓ Generated embeddings with shape {embeddings.shape}")
-        
         return embeddings
     
     def generate_and_save_embeddings(self, db_path='./data/market_rhetoric.db'):
@@ -111,8 +88,8 @@ class TextEmbeddingGenerator:
                 embeddings_dict[speech_id] = english_embeddings[idx]
         
         if len(hindi_df) > 0:
-            logger.info(f"Processing {len(hindi_df)} Hindi speeches...")
-            hindi_embeddings = self.embed_indicbert(hindi_df['processed_text'].tolist())
+            logger.info(f"Processing {len(hindi_df)} Hindi/Other speeches...")
+            hindi_embeddings = self.embed_sbert(hindi_df['processed_text'].tolist())
             
             for idx, speech_id in enumerate(hindi_df['id']):
                 embeddings_dict[speech_id] = hindi_embeddings[idx]

@@ -1,0 +1,209 @@
+==========================================================================================
+  BAATSE BHARAT — SPEECH-MARKET INFLUENCE REPORT
+  BERTopic + SBERT Embeddings | Past vs Present Stock Prices
+==========================================================================================
+
+──────────────────────────────────────────────────────────────────────────────────────────
+  EVENT   : N/A  |  ECB  |  European Central Bank
+  TITLE   : ECB launches pilot project for research access to confidential statistical data
+  TOPIC   : Banking sector  (BERTopic keywords: bank, reserve, financial, system, risk, market)
+──────────────────────────────────────────────────────────────────────────────────────────
+  [No market data available for this event period]
+
+──────────────────────────────────────────────────────────────────────────────────────────
+  EVENT   : N/A  |  ECB  |  European Central Bank
+  TITLE   : ECB launches pilot project for research access to confidential statistical data
+  TOPIC   : Banking sector  (BERTopic keywords: bank, reserve, financial, system, risk, market)
+──────────────────────────────────────────────────────────────────────────────────────────
+  [No market data available for this event period]
+
+──────────────────────────────────────────────────────────────────────────────────────────
+  EVENT   : Last Updated: Mar 18, 2026, 09:15:00 AM IST  |  Ursula von der Leyen  |  None
+  TITLE   : FTAs to boost FDI, manufacturing in India: Audi India Brand Director
+  TOPIC   : Broad Market sector  (BERTopic keywords: friend, countryman, come, new, know, work)
+──────────────────────────────────────────────────────────────────────────────────────────
+  [No market data available for this event period]
+
+──────────────────────────────────────────────────────────────────────────────────────────
+  EVENT   : Last Updated: Mar 17, 2026, 09:45:00 PM IST  |  Ursula von der Leyen  |  None
+  TITLE   : Jaishankar pushes India-EU ties amid West Asia crisis
+  TOPIC   : Broad Market sector  (BERTopic keywords: friend, countryman, come, new, know, work)
+──────────────────────────────────────────────────────────────────────────────────────────
+  [No market data available for this event period]
+
+──────────────────────────────────────────────────────────────────────────────────────────
+  EVENT   : Last Updated: Mar 16, 2026, 09:08:00 PM IST  |  Ursula von der Leyen  |  None
+  TITLE   : EU, India focus on implementing FTA, defence deal: Ursula von der Leyen
+  TOPIC   : Broad Market sector  (BERTopic keywords: friend, countryman, come, new, know, work)
+──────────────────────────────────────────────────────────────────────────────────────────
+  [No market data available for this event period]
+
+──────────────────────────────────────────────────────────────────────────────────────────
+  EVENT   : Last Updated: Jun 13, 2025, 01:49:00 AM IST  |  Ursula von der Leyen  |  None
+  TITLE   : Ahmedabad Air India plane crash: 241 of 242 passengers confirmed dead, sole surv
+  TOPIC   : Broad Market sector  (BERTopic keywords: friend, countryman, come, new, know, work)
+──────────────────────────────────────────────────────────────────────────────────────────
+  [No market data available for this event period]
+
+──────────────────────────────────────────────────────────────────────────────────────────
+  EVENT   : 2026-05-08  |  Fed  |  None
+  TITLE   : Federal Reserve Board announces approval of related applications by Columbia Ban
+  TOPIC   : Banking sector  (BERTopic keywords: bank, reserve, financial, system, risk, market)
+──────────────────────────────────────────────────────────────────────────────────────────
+  Ticker           Sector         Price (T-0)    Price (T+5)    Price (T+10)   5D Ret%    10D Ret%   Influence
+  ──────────────── ────────────── ────────────── ────────────── ────────────── ────────── ────────── ──────────
+  ^NSEBANK         Banking        55310.55       nan            nan            +nan%      +nan%      NEUTRAL
+  HDFCBANK.NS      Banking        780.85         nan            nan            +nan%      +nan%      NEUTRAL
+  ICICIBANK.NS     Banking        1264.80        nan            nan            +nan%      +nan%      NEUTRAL
+
+──────────────────────────────────────────────────────────────────────────────────────────
+  EVENT   : 2026-05-08  |  Fed  |  Governor Lisa D. Cook
+  TITLE   : Perspectives on Tokenization and Implications for the Financial System
+  TOPIC   : Banking sector  (BERTopic keywords: bank, reserve, financial, system, risk, market)
+──────────────────────────────────────────────────────────────────────────────────────────
+  Ticker           Sector         Price (T-0)    Price (T+5)    Price (T+10)   5D Ret%    10D Ret%   Influence
+  ──────────────── ────────────── ────────────── ────────────── ────────────── ────────── ────────── ──────────
+  ^NSEBANK         Banking        55310.55       nan            nan            +nan%      +nan%      NEUTRAL
+  HDFCBANK.NS      Banking        780.85         nan            nan            +nan%      +nan%      NEUTRAL
+  ICICIBANK.NS     Banking        1264.80        nan            nan            +nan%      +nan%      NEUTRAL
+
+──────────────────────────────────────────────────────────────────────────────────────────
+  EVENT   : 2026-05-08  |  Fed  |  Vice Chair for Supervision Michelle W. Bowman
+  TITLE   : When Regulation Reshapes Markets: The Migration of Corporate Lending
+  TOPIC   : Banking sector  (BERTopic keywords: bank, reserve, financial, system, risk, market)
+──────────────────────────────────────────────────────────────────────────────────────────
+  Ticker           Sector         Price (T-0)    Price (T+5)    Price (T+10)   5D Ret%    10D Ret%   Influence
+  ──────────────── ────────────── ────────────── ────────────── ────────────── ────────── ────────── ──────────
+  ^NSEBANK         Banking        55310.55       nan            nan            +nan%      +nan%      NEUTRAL
+  HDFCBANK.NS      Banking        780.85         nan            nan            +nan%      +nan%      NEUTRAL
+  ICICIBANK.NS     Banking        1264.80        nan            nan            +nan%      +nan%      NEUTRAL
+
+──────────────────────────────────────────────────────────────────────────────────────────
+  EVENT   : 2026-05-08  |  Fed  |  Governor Christopher J. Waller
+  TITLE   : Update On Federal Reserve Bank Operations
+  TOPIC   : Banking sector  (BERTopic keywords: bank, reserve, financial, system, risk, market)
+──────────────────────────────────────────────────────────────────────────────────────────
+  Ticker           Sector         Price (T-0)    Price (T+5)    Price (T+10)   5D Ret%    10D Ret%   Influence
+  ──────────────── ────────────── ────────────── ────────────── ────────────── ────────── ────────── ──────────
+  ^NSEBANK         Banking        55310.55       nan            nan            +nan%      +nan%      NEUTRAL
+  HDFCBANK.NS      Banking        780.85         nan            nan            +nan%      +nan%      NEUTRAL
+  ICICIBANK.NS     Banking        1264.80        nan            nan            +nan%      +nan%      NEUTRAL
+
+──────────────────────────────────────────────────────────────────────────────────────────
+  EVENT   : 2026-05-08  |  Fed  |  Governor Lisa D. Cook
+  TITLE   : Perspectives on Tokenization and Implications for the Financial System
+  TOPIC   : Banking sector  (BERTopic keywords: bank, reserve, financial, system, risk, market)
+──────────────────────────────────────────────────────────────────────────────────────────
+  Ticker           Sector         Price (T-0)    Price (T+5)    Price (T+10)   5D Ret%    10D Ret%   Influence
+  ──────────────── ────────────── ────────────── ────────────── ────────────── ────────── ────────── ──────────
+  ^NSEBANK         Banking        55310.55       nan            nan            +nan%      +nan%      NEUTRAL
+  HDFCBANK.NS      Banking        780.85         nan            nan            +nan%      +nan%      NEUTRAL
+  ICICIBANK.NS     Banking        1264.80        nan            nan            +nan%      +nan%      NEUTRAL
+
+──────────────────────────────────────────────────────────────────────────────────────────
+  EVENT   : 2026-05-08  |  Fed  |  Vice Chair for Supervision Michelle W. Bowman
+  TITLE   : When Regulation Reshapes Markets: The Migration of Corporate Lending
+  TOPIC   : Banking sector  (BERTopic keywords: bank, reserve, financial, system, risk, market)
+──────────────────────────────────────────────────────────────────────────────────────────
+  Ticker           Sector         Price (T-0)    Price (T+5)    Price (T+10)   5D Ret%    10D Ret%   Influence
+  ──────────────── ────────────── ────────────── ────────────── ────────────── ────────── ────────── ──────────
+  ^NSEBANK         Banking        55310.55       nan            nan            +nan%      +nan%      NEUTRAL
+  HDFCBANK.NS      Banking        780.85         nan            nan            +nan%      +nan%      NEUTRAL
+  ICICIBANK.NS     Banking        1264.80        nan            nan            +nan%      +nan%      NEUTRAL
+
+──────────────────────────────────────────────────────────────────────────────────────────
+  EVENT   : 2026-05-08  |  Fed  |  Governor Christopher J. Waller
+  TITLE   : Update On Federal Reserve Bank Operations
+  TOPIC   : Banking sector  (BERTopic keywords: bank, reserve, financial, system, risk, market)
+──────────────────────────────────────────────────────────────────────────────────────────
+  Ticker           Sector         Price (T-0)    Price (T+5)    Price (T+10)   5D Ret%    10D Ret%   Influence
+  ──────────────── ────────────── ────────────── ────────────── ────────────── ────────── ────────── ──────────
+  ^NSEBANK         Banking        55310.55       nan            nan            +nan%      +nan%      NEUTRAL
+  HDFCBANK.NS      Banking        780.85         nan            nan            +nan%      +nan%      NEUTRAL
+  ICICIBANK.NS     Banking        1264.80        nan            nan            +nan%      +nan%      NEUTRAL
+
+──────────────────────────────────────────────────────────────────────────────────────────
+  EVENT   : 2026-05-08  |  Fed  |  Governor Lisa D. Cook
+  TITLE   : Perspectives on Tokenization and Implications for the Financial System
+  TOPIC   : Banking sector  (BERTopic keywords: bank, reserve, financial, system, risk, market)
+──────────────────────────────────────────────────────────────────────────────────────────
+  Ticker           Sector         Price (T-0)    Price (T+5)    Price (T+10)   5D Ret%    10D Ret%   Influence
+  ──────────────── ────────────── ────────────── ────────────── ────────────── ────────── ────────── ──────────
+  ^NSEBANK         Banking        55310.55       nan            nan            +nan%      +nan%      NEUTRAL
+  HDFCBANK.NS      Banking        780.85         nan            nan            +nan%      +nan%      NEUTRAL
+  ICICIBANK.NS     Banking        1264.80        nan            nan            +nan%      +nan%      NEUTRAL
+
+──────────────────────────────────────────────────────────────────────────────────────────
+  EVENT   : 2026-05-08  |  Fed  |  Vice Chair for Supervision Michelle W. Bowman
+  TITLE   : When Regulation Reshapes Markets: The Migration of Corporate Lending
+  TOPIC   : Banking sector  (BERTopic keywords: bank, reserve, financial, system, risk, market)
+──────────────────────────────────────────────────────────────────────────────────────────
+  Ticker           Sector         Price (T-0)    Price (T+5)    Price (T+10)   5D Ret%    10D Ret%   Influence
+  ──────────────── ────────────── ────────────── ────────────── ────────────── ────────── ────────── ──────────
+  ^NSEBANK         Banking        55310.55       nan            nan            +nan%      +nan%      NEUTRAL
+  HDFCBANK.NS      Banking        780.85         nan            nan            +nan%      +nan%      NEUTRAL
+  ICICIBANK.NS     Banking        1264.80        nan            nan            +nan%      +nan%      NEUTRAL
+
+──────────────────────────────────────────────────────────────────────────────────────────
+  EVENT   : 2026-05-08  |  Fed  |  Governor Christopher J. Waller
+  TITLE   : Update On Federal Reserve Bank Operations
+  TOPIC   : Banking sector  (BERTopic keywords: bank, reserve, financial, system, risk, market)
+──────────────────────────────────────────────────────────────────────────────────────────
+  Ticker           Sector         Price (T-0)    Price (T+5)    Price (T+10)   5D Ret%    10D Ret%   Influence
+  ──────────────── ────────────── ────────────── ────────────── ────────────── ────────── ────────── ──────────
+  ^NSEBANK         Banking        55310.55       nan            nan            +nan%      +nan%      NEUTRAL
+  HDFCBANK.NS      Banking        780.85         nan            nan            +nan%      +nan%      NEUTRAL
+  ICICIBANK.NS     Banking        1264.80        nan            nan            +nan%      +nan%      NEUTRAL
+
+──────────────────────────────────────────────────────────────────────────────────────────
+  EVENT   : 2026-05-05  |  Fed  |  Vice Chair for Supervision Michelle W. Bowman
+  TITLE   : A Coordinated Approach to Consumer Fraud Protection
+  TOPIC   : Banking sector  (BERTopic keywords: bank, reserve, financial, system, risk, market)
+──────────────────────────────────────────────────────────────────────────────────────────
+  Ticker           Sector         Price (T-0)    Price (T+5)    Price (T+10)   5D Ret%    10D Ret%   Influence
+  ──────────────── ────────────── ────────────── ────────────── ────────────── ────────── ────────── ──────────
+  ^NSEBANK         Banking        54547.05       nan            nan            +nan%      +nan%      NEUTRAL
+  HDFCBANK.NS      Banking        772.30         nan            nan            +nan%      +nan%      NEUTRAL
+  ICICIBANK.NS     Banking        1251.30        nan            nan            +nan%      +nan%      NEUTRAL
+
+──────────────────────────────────────────────────────────────────────────────────────────
+  EVENT   : 2026-05-05  |  Fed  |  Vice Chair for Supervision Michelle W. Bowman
+  TITLE   : A Coordinated Approach to Consumer Fraud Protection
+  TOPIC   : Banking sector  (BERTopic keywords: bank, reserve, financial, system, risk, market)
+──────────────────────────────────────────────────────────────────────────────────────────
+  Ticker           Sector         Price (T-0)    Price (T+5)    Price (T+10)   5D Ret%    10D Ret%   Influence
+  ──────────────── ────────────── ────────────── ────────────── ────────────── ────────── ────────── ──────────
+  ^NSEBANK         Banking        54547.05       nan            nan            +nan%      +nan%      NEUTRAL
+  HDFCBANK.NS      Banking        772.30         nan            nan            +nan%      +nan%      NEUTRAL
+  ICICIBANK.NS     Banking        1251.30        nan            nan            +nan%      +nan%      NEUTRAL
+
+──────────────────────────────────────────────────────────────────────────────────────────
+  EVENT   : 2026-05-05  |  Fed  |  Vice Chair for Supervision Michelle W. Bowman
+  TITLE   : A Coordinated Approach to Consumer Fraud Protection
+  TOPIC   : Banking sector  (BERTopic keywords: bank, reserve, financial, system, risk, market)
+──────────────────────────────────────────────────────────────────────────────────────────
+  Ticker           Sector         Price (T-0)    Price (T+5)    Price (T+10)   5D Ret%    10D Ret%   Influence
+  ──────────────── ────────────── ────────────── ────────────── ────────────── ────────── ────────── ──────────
+  ^NSEBANK         Banking        54547.05       nan            nan            +nan%      +nan%      NEUTRAL
+  HDFCBANK.NS      Banking        772.30         nan            nan            +nan%      +nan%      NEUTRAL
+  ICICIBANK.NS     Banking        1251.30        nan            nan            +nan%      +nan%      NEUTRAL
+
+──────────────────────────────────────────────────────────────────────────────────────────
+  EVENT   : 2026-05-01  |  Fed  |  Vice Chair for Supervision Michelle W. Bowman
+  TITLE   : Artificial Intelligence in the Financial System
+  TOPIC   : Banking sector  (BERTopic keywords: bank, reserve, financial, system, risk, market)
+──────────────────────────────────────────────────────────────────────────────────────────
+  Ticker           Sector         Price (T-0)    Price (T+5)    Price (T+10)   5D Ret%    10D Ret%   Influence
+  ──────────────── ────────────── ────────────── ────────────── ────────────── ────────── ────────── ──────────
+  ^NSEBANK         Banking        54863.35       55310.55       nan            +0.82%     +nan%      NEUTRAL
+  HDFCBANK.NS      Banking        771.70         780.85         nan            +1.19%     +nan%      POSITIVE
+  ICICIBANK.NS     Banking        1263.40        1264.80        nan            +0.11%     +nan%      NEUTRAL
+
+==========================================================================================
+  SUMMARY: Topics Discovered by BERTopic
+==========================================================================================
+  Topic   0  (  24 docs)  → Banking         [bank, reserve, financial, system, risk]
+  Topic   1  ( 227 docs)  → Broad Market    [friend, countryman, come, new, know]
+
+==========================================================================================
+  Report complete.

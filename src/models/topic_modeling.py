@@ -31,17 +31,24 @@ class HybridTopicModeler:
         # Vectorizers
         self.count_vectorizer = None
         self.tfidf_vectorizer = None
+
+        # Domain-specific noise reduction
+        self.custom_stopwords = [
+            "countrymen", "new", "come", "dear", "episode", "mann", "baat", "modi", 
+            "namaste", "friends", "brothers", "sisters", "people", "today", "year",
+            "country", "nation", "time", "government", "india", "indian", "way"
+        ]
     
     def fit_lda(self, documents):
         """Fit LDA model"""
-        logger.info("Fitting LDA model...")
+        logger.info("Fitting LDA model (Ensemble Part 1/3)...")
         
         # Create vectorizer
         self.count_vectorizer = CountVectorizer(
             max_features=5000,
             min_df=2,
             max_df=0.8,
-            stop_words='english'
+            stop_words=self.custom_stopwords
         )
         
         doc_term_matrix = self.count_vectorizer.fit_transform(documents)
@@ -56,21 +63,19 @@ class HybridTopicModeler:
         )
         
         self.lda_model.fit(doc_term_matrix)
-        
         logger.info("✓ LDA model fitted")
-        
         return self.lda_model.transform(doc_term_matrix)
     
     def fit_nmf(self, documents):
         """Fit NMF model"""
-        logger.info("Fitting NMF model...")
+        logger.info("Fitting NMF model (Ensemble Part 2/3)...")
         
         # Create vectorizer
         self.tfidf_vectorizer = TfidfVectorizer(
             max_features=5000,
             min_df=2,
             max_df=0.8,
-            stop_words='english'
+            stop_words=self.custom_stopwords
         )
         
         tfidf_matrix = self.tfidf_vectorizer.fit_transform(documents)
@@ -84,18 +89,41 @@ class HybridTopicModeler:
         )
         
         self.nmf_model.fit(tfidf_matrix)
-        
-        logger.info("✓ NMF model fitted")
-        
+        logger.info("NMF model fitted")
         return self.nmf_model.transform(tfidf_matrix)
     
     def fit_bertopic(self, documents, embeddings):
         """Fit BERTopic model"""
-        logger.info("Fitting BERTopic model...")
+        logger.info("Fitting BERTopic model (Ensemble Part 3/3)...")
         
-        # Initialize BERTopic
+        # Enhanced Vectorizer with N-grams (captures phrases like "digital india")
+        vectorizer_model = CountVectorizer(
+            stop_words=self.custom_stopwords, 
+            min_df=2,
+            ngram_range=(1, 3)
+        )
+        
+        # High-granularity clustering configuration
+        from umap import UMAP
+        from hdbscan import HDBSCAN
+        from bertopic.vectorizers import ClassTfidfTransformer
+        
+        # More local neighbors = higher resolution clusters
+        umap_model = UMAP(n_neighbors=5, n_components=5, min_dist=0.0, metric='cosine', random_state=42)
+        
+        # Very small min_cluster_size to find micro-topics
+        hdbscan_model = HDBSCAN(min_cluster_size=5, min_samples=2, metric='euclidean', cluster_selection_method='eom', prediction_data=True)
+
+        # BM25 Weighting for more precise keywords
+        ctfidf_model = ClassTfidfTransformer(bm25_weighting=True, reduce_frequent_words=True)
+
+        # Initialize BERTopic with None to keep ALL discovered clusters
         self.bertopic_model = BERTopic(
-            nr_topics=self.n_topics,
+            nr_topics=None, 
+            vectorizer_model=vectorizer_model,
+            umap_model=umap_model,
+            hdbscan_model=hdbscan_model,
+            ctfidf_model=ctfidf_model,
             calculate_probabilities=True,
             verbose=False
         )
@@ -103,41 +131,69 @@ class HybridTopicModeler:
         # Fit
         topics, probs = self.bertopic_model.fit_transform(documents, embeddings)
         
-        logger.info("✓ BERTopic model fitted")
+        logger.info("BERTopic model fitted")
+        
+        # Get actual number of topics found (including outlier -1)
+        actual_n = len(self.bertopic_model.get_topic_info()) - 1
+        if actual_n < 1: actual_n = 1
         
         # Convert to topic distributions
-        topic_dist = np.zeros((len(documents), self.n_topics))
+        topic_dist = np.zeros((len(documents), actual_n))
         for i, (topic, prob_dist) in enumerate(zip(topics, probs)):
             if topic != -1 and prob_dist is not None:
-                # Handle shapes safely based on bertopic version
-                if isinstance(prob_dist, np.ndarray) and prob_dist.shape == (self.n_topics,):
-                    topic_dist[i] = prob_dist
+                # BERTopic probabilities are for all topics except outlier
+                if isinstance(prob_dist, np.ndarray):
+                    if prob_dist.shape[0] == actual_n:
+                        topic_dist[i] = prob_dist
+                    elif prob_dist.shape[0] > 0:
+                        # Fallback if shapes differ slightly
+                        limit = min(prob_dist.shape[0], actual_n)
+                        topic_dist[i, :limit] = prob_dist[:limit]
         
-        return topic_dist
+        return topic_dist, topics
     
     def fit_ensemble(self, documents, embeddings):
         """
-        Fit all three models
+        Fit all three models in a high-precision cascade
         """
-        logger.info(f"Training ensemble on {len(documents)} documents...")
+        logger.info(f"Training high-precision ensemble on {len(documents)} documents...")
         
-        # Fit each model
+        # 1. Fit BERTopic first to determine the natural number of micro-topics
+        bert_dist, bert_topics = self.fit_bertopic(documents, embeddings)
+        
+        # Determine how many topics were actually found
+        discovered_n = len(self.bertopic_model.get_topic_info()) - 1 # excluding outlier -1
+        if discovered_n < 5: discovered_n = self.n_topics # fallback
+        
+        logger.info(f"BERTopic discovered {discovered_n} micro-topics. Syncing LDA/NMF...")
+        self.n_topics = discovered_n
+        
+        # 2. Fit LDA and NMF with the same granularity
         lda_topics = self.fit_lda(documents)
         nmf_topics = self.fit_nmf(documents)
-        bert_topics = self.fit_bertopic(documents, embeddings)
         
+        # Ensure bert_dist is the correct shape if it wasn't before
+        # (re-running fit_bertopic logic inside here to ensure shape match)
+        # Actually, fit_bertopic already returns bert_dist, but we need to ensure it's (len, discovered_n)
+        if bert_dist.shape[1] != discovered_n:
+            # Re-pad or re-slice if necessary
+            new_bert_dist = np.zeros((len(documents), discovered_n))
+            min_cols = min(bert_dist.shape[1], discovered_n)
+            new_bert_dist[:, :min_cols] = bert_dist[:, :min_cols]
+            bert_dist = new_bert_dist
+
         distributions = {
             'lda': lda_topics,
             'nmf': nmf_topics,
-            'bertopic': bert_topics
+            'bertopic': bert_dist
         }
         
-        # Create consensus
+        # 3. Create consensus
         consensus = self.create_consensus(distributions)
         
-        logger.info("✓ Ensemble training complete")
+        logger.info(f"Ensemble training complete. Consensus reached for {discovered_n} topics.")
         
-        return consensus, distributions
+        return consensus, distributions, bert_topics
     
     def create_consensus(self, distributions):
         """
