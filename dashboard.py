@@ -40,6 +40,8 @@ C_REGIME_QUARTERLY = os.path.join(CACHE_DIR, "regime_quarterly.csv")
 C_SECTOR_AVG       = os.path.join(CACHE_DIR, "sector_avg.csv")
 C_SENTIMENT        = os.path.join(CACHE_DIR, "sentiment_timeline.csv")
 C_TOPICS           = os.path.join(CACHE_DIR, "topics_enriched.csv")
+C_FORECAST_Q       = os.path.join(CACHE_DIR, "forecast_quarterly.csv")
+C_FORECAST_W       = os.path.join(CACHE_DIR, "forecast_weekly.csv")
 
 # ==========================================================
 # CACHE CHECK
@@ -48,7 +50,8 @@ C_TOPICS           = os.path.join(CACHE_DIR, "topics_enriched.csv")
 cache_files = [
     C_SECTOR_WEEKLY, C_SECTOR_QUARTERLY,
     C_REGIME_WEEKLY, C_REGIME_QUARTERLY,
-    C_SECTOR_AVG, C_TOPICS
+    C_SECTOR_AVG, C_TOPICS,
+    C_FORECAST_Q, C_FORECAST_W,
 ]
 
 if not all(os.path.exists(f) for f in cache_files):
@@ -148,6 +151,16 @@ def load_nmf_topics():
 
 
 @st.cache_data
+def load_forecast_quarterly():
+    return pd.read_csv(C_FORECAST_Q)
+
+
+@st.cache_data
+def load_forecast_weekly():
+    return pd.read_csv(C_FORECAST_W)
+
+
+@st.cache_data
 def load_report():
     if os.path.exists(REPORT_PATH):
         for enc in ["utf-8", "utf-8-sig", "latin-1", "cp1252"]:
@@ -171,6 +184,8 @@ df_sector_avg = load_sector_avg()
 df_sentiment  = load_sentiment_timeline()
 df_topics     = load_topics()
 df_nmf        = load_nmf_topics()
+df_forecast_q = load_forecast_quarterly()
+df_forecast_w = load_forecast_weekly()
 report_text   = load_report()
 
 # ==========================================================
@@ -423,6 +438,177 @@ elif page == "📈 MARKET DYNAMICS":
         "🟢 Bull %", "🔴 Bear %", "⚪ Neutral %"
     ]]
     st.dataframe(regime_display, use_container_width=True, hide_index=True)
+
+    # ── ✨ FUTURE REGIME FORECAST ──────────────────────────
+    st.markdown("---")
+    st.markdown(
+        "### 🔮 Future Market Regime Forecast"
+    )
+    st.markdown(
+        '<p class="hero-subtitle">'
+        'Markov chain transition model · Linear return extrapolation · 95% confidence band'
+        '</p>',
+        unsafe_allow_html=True
+    )
+
+    df_fc = df_forecast_q.copy() if granularity == "Quarterly" else df_forecast_w.copy()
+    fc_period_col = "period"
+
+    REGIME_FC_COLORS = {
+        "Bull":    "#34d399",
+        "Bear":    "#f87171",
+        "Neutral": "#94a3b8",
+    }
+    REGIME_EMOJI = {
+        "Bull": "🟢", "Bear": "🔴", "Neutral": "⚪"
+    }
+
+    fc_left = SECTORS[:len(SECTORS) // 2 + len(SECTORS) % 2]
+    fc_right = SECTORS[len(SECTORS) // 2 + len(SECTORS) % 2:]
+
+    def build_forecast_fig(sector):
+        fdf = df_fc[df_fc["sector"] == sector].copy()
+        if fdf.empty:
+            return go.Figure()
+
+        sec_color = SECTOR_COLORS.get(sector, "#94a3b8")
+
+        fig = go.Figure()
+
+        # ── Stacked probability bars ───────────────────────
+        fig.add_trace(go.Bar(
+            x=fdf[fc_period_col], y=fdf["bull_prob"],
+            name="🟢 Bull %", marker_color="rgba(52,211,153,0.75)",
+            hovertemplate="%{x}<br>Bull: %{y:.1f}%<extra></extra>",
+            yaxis="y1"
+        ))
+        fig.add_trace(go.Bar(
+            x=fdf[fc_period_col], y=fdf["neutral_prob"],
+            name="⚪ Neutral %", marker_color="rgba(148,163,184,0.55)",
+            hovertemplate="%{x}<br>Neutral: %{y:.1f}%<extra></extra>",
+            yaxis="y1"
+        ))
+        fig.add_trace(go.Bar(
+            x=fdf[fc_period_col], y=fdf["bear_prob"],
+            name="🔴 Bear %", marker_color="rgba(248,113,113,0.75)",
+            hovertemplate="%{x}<br>Bear: %{y:.1f}%<extra></extra>",
+            yaxis="y1"
+        ))
+
+        # ── Confidence band (shaded area) ──────────────────
+        fig.add_trace(go.Scatter(
+            x=list(fdf[fc_period_col]) + list(fdf[fc_period_col])[::-1],
+            y=list(fdf["ret_upper"]) + list(fdf["ret_lower"])[::-1],
+            fill="toself",
+            fillcolor=f"rgba({int(sec_color[1:3],16)},{int(sec_color[3:5],16)},{int(sec_color[5:7],16)},0.12)",
+            line=dict(color="rgba(0,0,0,0)"),
+            name="95% CI",
+            hoverinfo="skip",
+            yaxis="y2"
+        ))
+
+        # ── Forecast return line ───────────────────────────
+        fig.add_trace(go.Scatter(
+            x=fdf[fc_period_col], y=fdf["forecasted_return"],
+            mode="lines+markers+text",
+            name="Forecast Return",
+            line=dict(color=sec_color, width=2.5, dash="dash"),
+            marker=dict(size=7, symbol="diamond"),
+            text=[f"{v:+.2f}%" for v in fdf["forecasted_return"]],
+            textposition="top center",
+            textfont=dict(size=9, color=sec_color),
+            hovertemplate="%{x}<br>Forecast: %{y:+.3f}%<extra></extra>",
+            yaxis="y2"
+        ))
+
+        # ── Predicted regime badges as annotations ─────────
+        for _, row in fdf.iterrows():
+            fig.add_annotation(
+                x=row[fc_period_col],
+                y=103,
+                xref="x", yref="y1",
+                text=REGIME_EMOJI.get(row["predicted_regime"], ""),
+                showarrow=False,
+                font=dict(size=14)
+            )
+
+        top_regime = fdf["predicted_regime"].mode()[0]
+        rc = REGIME_FC_COLORS[top_regime]
+
+        fig.update_layout(
+            template="plotly_dark",
+            title=dict(
+                text=(
+                    f"<b>{sector}</b>  "
+                    f"<span style='color:{rc};font-size:12px'>"
+                    f"→ {REGIME_EMOJI[top_regime]} {top_regime.upper()} EXPECTED</span>"
+                ),
+                font=dict(size=14)
+            ),
+            barmode="stack",
+            height=370,
+            xaxis=dict(title=period_label, tickangle=-30),
+            yaxis=dict(
+                title="Regime Probability (%)",
+                range=[0, 115],
+                side="left",
+                showgrid=False
+            ),
+            yaxis2=dict(
+                title="Forecast Return (%)",
+                overlaying="y",
+                side="right",
+                showgrid=False,
+                zeroline=True,
+                zerolinecolor="#475569"
+            ),
+            legend=dict(
+                orientation="h",
+                yanchor="bottom", y=-0.38,
+                xanchor="center", x=0.5,
+                font=dict(size=9)
+            ),
+            plot_bgcolor="#0f172a",
+            paper_bgcolor="#0f172a",
+            margin=dict(t=55, b=90, l=55, r=60)
+        )
+        return fig
+
+    fc_col_left, fc_col_right = st.columns(2)
+    with fc_col_left:
+        for sec in fc_left:
+            st.plotly_chart(
+                build_forecast_fig(sec),
+                use_container_width=True,
+                key=f"fc_left_{sec}_{granularity}"
+            )
+    with fc_col_right:
+        for sec in fc_right:
+            st.plotly_chart(
+                build_forecast_fig(sec),
+                use_container_width=True,
+                key=f"fc_right_{sec}_{granularity}"
+            )
+
+    # ── Forecast summary table ─────────────────────────────
+    st.markdown("#### Forecast Summary")
+    fc_summary = df_fc.copy()
+    fc_summary["Predicted Regime"] = fc_summary["predicted_regime"].map({
+        "Bull": "🟢 Bull", "Bear": "🔴 Bear", "Neutral": "⚪ Neutral"
+    })
+    fc_summary = fc_summary.rename(columns={
+        "sector":            "Sector",
+        "period":            period_label,
+        "bull_prob":         "🟢 Bull %",
+        "bear_prob":         "🔴 Bear %",
+        "neutral_prob":      "⚪ Neutral %",
+        "forecasted_return": "Forecast Return (%)",
+        "ret_lower":         "Lower 95%",
+        "ret_upper":         "Upper 95%",
+    })[["Sector", period_label, "Predicted Regime",
+        "🟢 Bull %", "🔴 Bear %", "⚪ Neutral %",
+        "Forecast Return (%)", "Lower 95%", "Upper 95%"]]
+    st.dataframe(fc_summary, use_container_width=True, hide_index=True)
 
     # ── Topic strength vs sector overlay ──────────────────
     st.markdown("---")
