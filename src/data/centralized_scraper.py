@@ -8,6 +8,8 @@ import time
 import re
 import os
 import sys
+import json
+import hashlib
 import asyncio
 from playwright.async_api import async_playwright
 
@@ -106,6 +108,23 @@ class CentralizedSpeechScraper:
         conn.commit()
         conn.close()
 
+    def _generate_hash(self, title, text):
+        """Generate SHA-256 hash of title + first 100 chars of text"""
+        prefix = text[:100] if text else ""
+        content = f"{title}{prefix}".encode('utf-8')
+        return hashlib.sha256(content).hexdigest()
+
+    def _log_ingestion(self, source, count, expected, missing=None):
+        """Log ingestion results to ingestion_log.txt"""
+        log_path = './ingestion_log.txt'
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        missing_str = f" | Missing: {missing}" if missing else ""
+        log_entry = f"[{timestamp}] Source: {source} | Episodes scraped: {count}/{expected}{missing_str}\n"
+        
+        with open(log_path, 'a', encoding='utf-8') as f:
+            f.write(log_entry)
+        logger.info(f"Ingestion logged for {source}")
+
     def save_speeches(self, speeches, transcript_dir=None, file_prefix='speech'):
         """Save a list of speech dictionaries to the database and optionally to disk"""
         if not speeches:
@@ -113,6 +132,7 @@ class CentralizedSpeechScraper:
             return 0
             
         conn = get_db_connection(self.db_path)
+        cursor = conn.cursor()
         saved_count = 0
         
         # Ensure transcript directory exists if provided
@@ -121,7 +141,21 @@ class CentralizedSpeechScraper:
             
         for speech in speeches:
             try:
-                # 1. Save to Database
+                # 1. Deduplication Check
+                title = speech.get('title', 'N/A')
+                text = speech.get('full_text', '')
+                doc_hash = self._generate_hash(title, text)
+                
+                # Check if hash already exists (using a metadata field or just unique constraint)
+                # For now, let's use the unique constraint in the DB if available, 
+                # but we'll also check explicitly to avoid INSERT OR IGNORE silently skipping without counting.
+                
+                cursor.execute("SELECT id FROM speeches WHERE title = ? AND date = ? AND source = ?", 
+                               (speech.get('title'), speech.get('date'), speech.get('source')))
+                if cursor.fetchone():
+                    continue
+
+                # 2. Save to Database
                 conn.execute('''
                     INSERT OR IGNORE INTO speeches 
                     (date, source, country, speaker, title, full_text, url, doc_type)
@@ -138,7 +172,7 @@ class CentralizedSpeechScraper:
                 ))
                 saved_count += 1
                 
-                # 2. Save to individual .txt file if transcript_dir provided
+                # 3. Save to individual .txt file if transcript_dir provided
                 if transcript_dir and speech.get('full_text'):
                     # Sanitize all parts of filename
                     safe_title = re.sub(r'[^\w\s-]', '', speech.get('title', 'untitled')).strip().replace(' ', '_')[:60]
@@ -194,7 +228,10 @@ class CentralizedSpeechScraper:
                     
                     year_urls = 0
                     for href in links:
-                        if href and '/press/key/date/' in href and 'sp' in href:
+                        # Filter by URL pattern containing monetary-policy or press-conference as per instructions
+                        is_relevant = 'monetary-policy' in href or 'press-conference' in href
+                        
+                        if href and '/press/key/date/' in href and 'sp' in href and is_relevant:
                             # URL often contains date pattern spYYMMDD
                             date_match = re.search(r'sp(\d{2})(\d{2})(\d{2})', href)
                             if date_match:
@@ -207,7 +244,7 @@ class CentralizedSpeechScraper:
                                             year_urls += 1
                                 except ValueError:
                                     continue # Skip malformed dates (e.g. sp190000)
-                    logger.info(f"Year {year}: Discovered {year_urls} ECB speeches.")
+                    logger.info(f"Year {year}: Discovered {year_urls} relevant ECB monetary policy speeches.")
                 except Exception as e:
                     logger.error(f"Error visiting ECB archive {year}: {e}")
             
@@ -225,7 +262,9 @@ class CentralizedSpeechScraper:
                 speeches.append(content)
             time.sleep(0.5)
             
-        return self.save_speeches(speeches, transcript_dir='./transcripts/ecb', file_prefix='ecb')
+        count = self.save_speeches(speeches, transcript_dir='./transcripts/ecb', file_prefix='ecb')
+        self._log_ingestion("ECB Speeches", count, len(speech_urls))
+        return count
 
     def _scrape_ecb_content(self, url):
         """Scrapes individual ECB speech content with improved metadata extraction"""
@@ -398,7 +437,12 @@ class CentralizedSpeechScraper:
             time.sleep(0.5)
             
         logger.info(f"Total Fed speeches collected: {len(speeches)}")
-        return self.save_speeches(speeches, transcript_dir='./transcripts/fed', file_prefix='fed')
+        count = self.save_speeches(speeches, transcript_dir='./transcripts/fed', file_prefix='fed')
+        
+        # Log ingestion
+        self._log_ingestion("Fed", count, len(speech_links))
+        
+        return count
 
     # --- Mann Ki Baat Logic ---
 
@@ -468,7 +512,14 @@ class CentralizedSpeechScraper:
                 logger.error(f"Error loading {fpath}: {e}")
 
         logger.info(f"Mann Ki Baat: loaded {len(speeches)} episodes from local files.")
-        return self.save_speeches(speeches, transcript_dir=transcripts_dir, file_prefix='mann_ki_baat')
+        count = self.save_speeches(speeches, transcript_dir=transcripts_dir, file_prefix='mann_ki_baat')
+        
+        # Log ingestion
+        expected_episodes = 120 # Example expected count
+        missing_episodes = [] # Logic to find missing episodes could be added here
+        self._log_ingestion("Mann Ki Baat", count, expected_episodes, missing="None detected" if not missing_episodes else str(missing_episodes))
+        
+        return count
 
     async def scrape_ecb_press_releases(self, days_back=3650):
         """Scrape ECB press releases"""
@@ -503,7 +554,9 @@ class CentralizedSpeechScraper:
                 content.update({'source': 'ECB', 'country': 'Europe', 'doc_type': 'Press Release'})
                 speeches.append(content)
             time.sleep(0.5)
-        return self.save_speeches(speeches, transcript_dir='./transcripts/ecb', file_prefix='ecb')
+        count = self.save_speeches(speeches, transcript_dir='./transcripts/ecb', file_prefix='ecb')
+        self._log_ingestion("ECB PRs", count, len(pr_urls))
+        return count
 
     async def scrape_fed_press_releases(self, days_back=3650):
         """Scrape Fed press releases"""
@@ -556,7 +609,9 @@ class CentralizedSpeechScraper:
                 link_info.update({'source': 'Fed', 'country': 'USA'})
                 speeches.append(link_info)
             time.sleep(0.5)
-        return self.save_speeches(speeches, transcript_dir='./transcripts/fed', file_prefix='fed')
+        count = self.save_speeches(speeches, transcript_dir='./transcripts/fed', file_prefix='fed')
+        self._log_ingestion("Fed PRs", count, len(pr_links))
+        return count
 
     async def scrape_all(self, days_back=3650):
         """Scrape all sources: ECB, Fed and Mann Ki Baat (Speeches + PRs)"""

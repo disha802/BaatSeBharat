@@ -34,9 +34,8 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- Data Helpers ---
+# --- Required File Verification ---
 DB_PATH = './data/market_rhetoric.db'
-TOPIC_PATH = './data/processed/topic_distributions_prototype.npy'
 
 SOURCE_COLORS = {
     'Mann Ki Baat': '#f0883e',   # Orange
@@ -44,6 +43,18 @@ SOURCE_COLORS = {
     'Fed':          '#3fb950',   # Green
 }
 
+REQUIRED_FILES = [
+    DB_PATH,
+    './data/processed/topic_distributions_combined.npy',
+    './data/processed/topic_labels_combined.json'
+]
+
+missing_reqs = [f for f in REQUIRED_FILES if not os.path.exists(f)]
+if missing_reqs:
+    st.error(f"### ❌ CRITICAL: Missing Required Pipeline Files\n\nThe following files are missing. Please click **'🚀 Run Pipeline'** in the sidebar to generate them.\n\n" + "\n".join([f"- `{f}`" for f in missing_reqs]))
+    # We don't st.stop() here because we want the user to be able to click the button in the sidebar
+
+@st.cache_data
 def load_db_stats():
     try:
         conn = get_db_connection(DB_PATH)
@@ -54,6 +65,7 @@ def load_db_stats():
     except Exception:
         return 0, 0
 
+@st.cache_data
 def load_source_breakdown():
     try:
         conn = get_db_connection(DB_PATH)
@@ -68,7 +80,7 @@ st.sidebar.title("💎 Strategy Engine")
 st.sidebar.markdown("---")
 stage = st.sidebar.radio(
     "Pipeline Stage",
-    ["Executive Summary", "1. Data Ingestion", "2. NLP Intelligence", "3. Market Impact", "4. Fusion & Prediction"]
+    ["Executive Summary", "1. Data Ingestion", "2. NLP Intelligence", "3. Market Impact", "4. Regime Intelligence", "5. Company Analytics"]
 )
 
 st.sidebar.markdown("---")
@@ -471,144 +483,83 @@ elif stage == "3. Market Impact":
                 f"coinciding with a **{best_topic['avg_abnormal']*100:.2f}%** average 5-day abnormal return."
             )
 
-elif stage == "4. Fusion & Prediction":
-    st.title("🔀 Stage 4: Market Regime Prediction & NLP Superimposition")
+elif stage == "4. Regime Intelligence":
+    st.title("🛡️ Stage 4: Market Regime Intelligence (HMM)")
+    st.markdown("### Quantifying structural market shifts using Hidden Markov Models.")
 
-    conn4 = get_db_connection(DB_PATH)
-    mdf = pd.read_sql_query("SELECT date, ticker, close FROM market_data ORDER BY date", conn4)
-    speech_src = pd.read_sql_query(
-        "SELECT s.date, s.source, i.pwm_shock_score FROM speeches s LEFT JOIN speech_market_impact i ON s.id = i.speech_id WHERE s.date IS NOT NULL", conn4
-    )
-    regimes = pd.read_sql_query("SELECT date, sector as ticker, regime, confidence, deviation_magnitude, volume_zscore FROM regime_classifications ORDER BY date", conn4)
-    conn4.close()
+    conn = get_db_connection(DB_PATH)
+    regimes = pd.read_sql_query("SELECT date, sector, regime, confidence FROM regime_classifications ORDER BY date", conn)
+    market = pd.read_sql_query("SELECT date, ticker, close FROM market_data ORDER BY date", conn)
+    conn.close()
 
-    if mdf.empty or regimes.empty:
-        st.warning("No advanced regime data found. Run the pipeline first from the sidebar.")
+    if regimes.empty or market.empty:
+        st.warning("No regime data found. Run the pipeline first.")
     else:
-        mdf['date'] = pd.to_datetime(mdf['date'], errors='coerce')
-        speech_src['date'] = pd.to_datetime(speech_src['date'], errors='coerce')
-        regimes['date'] = pd.to_datetime(regimes['date'], errors='coerce')
+        regimes['date'] = pd.to_datetime(regimes['date'])
+        market['date'] = pd.to_datetime(market['date'])
+
+        tickers = market['ticker'].unique()
+        sel_ticker = st.selectbox("Select Ticker for Regime Timeline", tickers)
+
+        t_market = market[market['ticker'] == sel_ticker]
+        t_regimes = regimes[regimes['sector'] == sel_ticker]
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=t_market['date'], y=t_market['close'], name="Price", line=dict(color='white')))
+
+        # Add regime backgrounds
+        colors = {'Stable': 'rgba(63, 185, 80, 0.2)', 'Transitional': 'rgba(240, 136, 62, 0.2)', 'Volatile': 'rgba(248, 81, 73, 0.2)'}
         
-        mdf = mdf.dropna(subset=['date'])
-        speech_src = speech_src.dropna(subset=['date'])
+        # Group consecutive regimes to reduce shapes
+        t_regimes = t_regimes.sort_values('date')
+        if not t_regimes.empty:
+            start_date = t_regimes.iloc[0]['date']
+            curr_regime = t_regimes.iloc[0]['regime']
+            
+            for i in range(1, len(t_regimes)):
+                if t_regimes.iloc[i]['regime'] != curr_regime:
+                    end_date = t_regimes.iloc[i]['date']
+                    fig.add_vrect(x0=start_date, x1=end_date, fillcolor=colors.get(curr_regime, 'gray'), opacity=0.5, layer="below", line_width=0)
+                    start_date = end_date
+                    curr_regime = t_regimes.iloc[i]['regime']
+            
+            # Last segment
+            fig.add_vrect(x0=start_date, x1=t_regimes.iloc[-1]['date'], fillcolor=colors.get(curr_regime, 'gray'), opacity=0.5, layer="below", line_width=0)
 
-        tickers4 = sorted(mdf['ticker'].unique().tolist())
-        sel_ticker4 = st.selectbox("Select Ticker for Regime Analysis", tickers4)
+        fig.update_layout(title=f"{sel_ticker} Regime Timeline (Green=Stable, Yellow=Transitional, Red=Volatile)", template="plotly_dark", height=600)
+        st.plotly_chart(fig, use_container_width=True)
 
-        tdf = mdf[mdf['ticker'] == sel_ticker4].sort_values('date').copy()
-        tregimes = regimes[regimes['ticker'] == sel_ticker4].copy()
+elif stage == "5. Company Analytics":
+    st.title("🏢 Stage 5: Company Specific Returns vs. Rhetoric")
+    st.markdown("### Analyzing how leadership topics impact individual company performance.")
+
+    # In a real scenario, we'd have company-specific returns in the DB. 
+    # For this prototype, we'll use sector proxies or simulated company data.
+    
+    conn = get_db_connection(DB_PATH)
+    # Get topics
+    topics_df = pd.read_sql_query("SELECT s.date, td.topic_id, td.probability FROM topic_distributions td JOIN speeches s ON td.speech_id = s.id WHERE td.model_name = 'Combined'", conn)
+    conn.close()
+
+    if topics_df.empty:
+        st.warning("No topic data found. Run the pipeline first.")
+    else:
+        topics_df['date'] = pd.to_datetime(topics_df['date'])
         
-        # Merge prices with regime classification
-        tdf = tdf.merge(tregimes, on='date', how='left')
-        tdf['regime'] = tdf['regime'].fillna('Stable')
-        tdf['deviation_magnitude'] = tdf['deviation_magnitude'].fillna(0)
-
-        # Last 365 days
-        cutoff = pd.Timestamp.now() - pd.Timedelta(days=365)
-        tdf = tdf[tdf['date'] >= cutoff]
-
-        fig4 = go.Figure()
-        # Price line
-        fig4.add_trace(go.Scatter(
-            x=tdf['date'], y=tdf['close'],
-            name=sel_ticker4, mode='lines',
-            line=dict(color='#8b949e', width=2.0)
+        company = st.selectbox("Select Company", ["HDFC Bank", "Reliance Industries", "Infosys", "TCS", "ICICI Bank"])
+        
+        st.subheader(f"{company} Topic Impact Heatmap")
+        
+        # Pivot topics for heatmap
+        pivot_topics = topics_df.groupby(['date', 'topic_id'])['probability'].mean().unstack().fillna(0)
+        
+        fig_heat = go.Figure(data=go.Heatmap(
+            z=pivot_topics.values.T,
+            x=pivot_topics.index,
+            y=[f"Topic {i}" for i in pivot_topics.columns],
+            colorscale='Viridis'
         ))
-
-        # Shade regime bands based on ASBN/CPTM-F classifications
-        bull = tdf[tdf['regime'] == 'Bullish_Surge']
-        bear = tdf[tdf['regime'] == 'Bearish_Shock']
+        fig_heat.update_layout(title=f"Leadership Topic Intensity Over Time vs {company}", template="plotly_dark")
+        st.plotly_chart(fig_heat, use_container_width=True)
         
-        if not bull.empty:
-            fig4.add_trace(go.Scatter(
-                x=pd.concat([bull['date'], bull['date'].iloc[::-1]]),
-                y=pd.concat([bull['close'], pd.Series([tdf['close'].min()]*len(bull))]),
-                fill='toself', fillcolor='rgba(63,185,80,0.2)',
-                line=dict(width=0), name='Bullish Regime (CPTM-F)', showlegend=True
-            ))
-        if not bear.empty:
-            fig4.add_trace(go.Scatter(
-                x=pd.concat([bear['date'], bear['date'].iloc[::-1]]),
-                y=pd.concat([bear['close'], pd.Series([tdf['close'].min()]*len(bear))]),
-                fill='toself', fillcolor='rgba(240,136,62,0.2)',
-                line=dict(width=0), name='Bearish Regime (CPTM-F)', showlegend=True
-            ))
-
-        fig4.update_layout(
-            template="plotly_dark", height=500,
-            title=f"{sel_ticker4} — CPTM-F Extracted Regimes & Structural Deviation",
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-        )
-        st.plotly_chart(fig4, use_container_width=True)
-
-        # Current regime
-        last_regime = tdf['regime'].iloc[-1] if not tdf.empty else 'Stable'
-        last_dev = tdf['deviation_magnitude'].iloc[-1] if not tdf.empty else 0
-        
-        if last_regime == 'Bullish_Surge':
-            st.success(f"📈 **Current Regime: BULLISH SURGE** — Counterfactual deviation {last_dev:.2f}σ. Structural upside breakout detected.")
-        elif last_regime == 'Bearish_Shock':
-            st.error(f"📉 **Current Regime: BEARISH SHOCK** — Counterfactual deviation {last_dev:.2f}σ. Risk-off environment.")
-        else:
-            st.info(f"⚖️ **Current Regime: STABLE** — Routine market variance (ASBN < 1.5σ).")
-
-        # Speech event overlay on regime & PWM Shock
-        st.markdown("---")
-        st.subheader("📣 NLP Rhetoric vs Market Regimes (PWM Shocks)")
-        
-        col_r1, col_r2 = st.columns(2)
-        for src, color in SOURCE_COLORS.items():
-            src_data = speech_src[speech_src['source'] == src]
-            src_in_range = src_data[src_data['date'] >= cutoff]
-            
-            bullish_events = 0
-            avg_pwm = 0
-            if len(src_in_range) > 0:
-                for _, r in src_in_range.iterrows():
-                    d = r['date']
-                    closest = tdf.iloc[(tdf['date'] - d).abs().argsort()[:1]]
-                    if not closest.empty and closest['regime'].values[0] == 'Bullish_Surge':
-                        bullish_events += 1
-                
-                pct = (bullish_events / len(src_in_range) * 100)
-                avg_pwm = src_in_range['pwm_shock_score'].mean() if 'pwm_shock_score' in src_in_range else 0
-            else:
-                pct = 0
-
-            with col_r1:
-                st.metric(
-                    f"{src} — Events in Bullish Regime",
-                    f"{bullish_events}/{len(src_in_range)}",
-                    f"{pct:.0f}% reinforcement"
-                )
-            with col_r2:
-                st.metric(f"{src} — Tail Shock (PWM) Score", f"{avg_pwm:.5f}" if pd.notna(avg_pwm) else "N/A", "Extreme Risk Driver" if avg_pwm > 0 else "")
-
-        # IMPORTANT: Market Predictions
-        st.markdown("---")
-        st.subheader("🔮 ML Market Predictions (Fused Strategy)")
-        st.markdown("Superimposing NLP leadership topic-sentiment with current numerical trajectory to predict future market state.")
-        
-        # Calculate recent NLP momentum for this ticker 
-        # (Using a very basic heuristic blending the last known regime with recent PWM impact)
-        recent_speeches = speech_src[(speech_src['date'] >= cutoff)].sort_values('date', ascending=False).head(5)
-        recent_pwm = recent_speeches['pwm_shock_score'].mean() if not recent_speeches.empty else 0
-        
-        # Base confidence from regime deviation magnitude
-        confidence = min(abs(last_dev) * 30 + 10, 95) if last_regime != 'Stable' else 40
-        predicted_trend = "UP" if (last_regime == 'Bullish_Surge' or (last_regime == 'Stable' and recent_pwm > 0)) else "DOWN"
-        if last_regime == 'Stable' and -0.005 < recent_pwm < 0.005:
-            predicted_trend = "NEUTRAL"
-            
-        pred_col1, pred_col2 = st.columns(2)
-        with pred_col1:
-            st.info(f"**Predicted 30-Day Trajectory:** {predicted_trend} 🚀" if predicted_trend == "UP" else f"**Predicted 30-Day Trajectory:** {predicted_trend}")
-            st.progress(int(confidence))
-        with pred_col2:
-            st.metric("Model Confidence", f"{confidence:.1f}%")
-            st.caption("Driven by CPTM-F trends + recent leadership NLP tail shocks.")
-
-        st.info(
-            "💡 **Regime Signal:** CPTM-F bands highlight structural deviations separating normal volatility from regime shifts. "
-            "PWM Shock isolates the influence of policy rhetoric on extreme market tail returns."
-        )
+        st.info("💡 Heatmap shows topic strength. In a production environment, this would be correlated with T+N forward returns for the specific ticker.")

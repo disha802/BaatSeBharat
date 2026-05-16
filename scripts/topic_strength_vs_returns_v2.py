@@ -1,11 +1,11 @@
 """
 BaatSeBharat — Topic Strength vs Sector Returns
 ================================================
-Part A:  Group speeches by week/quarter → identify dominant sector via BERTopic
-         → predict sector baseline using only past data (no lookahead)
+Part A:  Group speeches by week/quarter -> identify dominant sector via BERTopic
+         -> predict sector baseline using only past data (no lookahead)
 
 Part B:  Compute topic strength = avg(topic_prob) × (1 + compound_sentiment)
-         → direction: POSITIVE if strength > 0, NEGATIVE if < 0
+         -> direction: POSITIVE if strength > 0, NEGATIVE if < 0
 
 Plot:    Dual line charts per sector
          • Line 1: Quarterly sector return (actual)
@@ -100,7 +100,7 @@ def load_data():
     return speeches, market, topic_kws
 
 
-# ─── Part A: Quarterly speech grouping → sector + past baseline ───────────────
+# ─── Part A: Quarterly speech grouping -> sector + past baseline ───────────────
 def build_quarterly_speech_profile(speeches: pd.DataFrame, topic_kws: dict) -> pd.DataFrame:
     """
     For each quarter, determine:
@@ -370,7 +370,7 @@ def plot_topic_strength_vs_returns(
     fig.update_layout(
         title=dict(
             text="<b>BaatSeBharat: Speech Topic Strength vs Sector Market Returns</b><br>"
-                 "<sub>Part A: Past-data baseline | Part B: Topic strength polarity → Return direction</sub>",
+                 "<sub>Part A: Past-data baseline | Part B: Topic strength polarity -> Return direction</sub>",
             font=dict(size=20, color="white"),
             x=0.5,
         ),
@@ -420,7 +420,7 @@ def main():
     print(f"  Speeches: {len(speeches)}  |  Market records: {len(market)}")
 
     # 2. Build quarterly speech profile (Part A + B)
-    print("\n[2/4] Building quarterly speech profiles (BERTopic → Sector → Strength)...")
+    print("\n[2/4] Building quarterly speech profiles (BERTopic -> Sector -> Strength)...")
     speech_profile = build_quarterly_speech_profile(speeches, topic_kws)
     print(f"  Quarters profiled: {len(speech_profile)}")
     print(speech_profile[["quarter", "sector", "avg_prob", "avg_compound", "topic_strength", "n_speeches"]].to_string(index=False))
@@ -436,7 +436,7 @@ def main():
 
     # Print lag summary
     print("\n" + "=" * 70)
-    print("  LAG ANALYSIS: Quarters between Speech Strength Peak → Return Peak")
+    print("  LAG ANALYSIS: Quarters between Speech Strength Peak -> Return Peak")
     print("=" * 70)
     if lag_summary:
         for entry in lag_summary:

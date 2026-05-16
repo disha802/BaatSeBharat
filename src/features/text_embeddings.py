@@ -67,32 +67,21 @@ class TextEmbeddingGenerator:
         # Load speeches
         conn = sqlite3.connect(db_path)
         df = pd.read_sql_query(
-            "SELECT id, processed_text, language FROM speeches WHERE processed_text IS NOT NULL",
+            "SELECT id, processed_text FROM speeches WHERE processed_text IS NOT NULL",
             conn
         )
         
         logger.info(f"Generating embeddings for {len(df)} speeches...")
         
-        # Separate by language
-        english_df = df[df['language'].str.contains('English', case=False, na=False)]
-        hindi_df = df[~df['language'].str.contains('English', case=False, na=False)]
-        
         # Generate embeddings
         embeddings_dict = {}
         
-        if len(english_df) > 0:
-            logger.info(f"Processing {len(english_df)} English speeches...")
-            english_embeddings = self.embed_sbert(english_df['processed_text'].tolist())
+        if len(df) > 0:
+            logger.info(f"Processing {len(df)} speeches...")
+            embeddings = self.embed_sbert(df['processed_text'].tolist())
             
-            for idx, speech_id in enumerate(english_df['id']):
-                embeddings_dict[speech_id] = english_embeddings[idx]
-        
-        if len(hindi_df) > 0:
-            logger.info(f"Processing {len(hindi_df)} Hindi/Other speeches...")
-            hindi_embeddings = self.embed_sbert(hindi_df['processed_text'].tolist())
-            
-            for idx, speech_id in enumerate(hindi_df['id']):
-                embeddings_dict[speech_id] = hindi_embeddings[idx]
+            for idx, speech_id in enumerate(df['id']):
+                embeddings_dict[speech_id] = embeddings[idx]
         
         # Save embeddings
         logger.info("Saving embeddings...")

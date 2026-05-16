@@ -3,6 +3,7 @@ import numpy as np
 import sqlite3
 import sys
 import os
+from hmmlearn import hmm
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from src.utils.logger import setup_logger
@@ -51,73 +52,143 @@ class MarketModeler:
         acceleration = velocity.diff()
         return acceleration
 
+    def _validate_data_for_hmm(self, df):
+        """Check for NaN, inf, or zero-variance columns in Nifty returns"""
+        if df.empty:
+            return False, "DataFrame is empty"
+        
+        # Calculate log returns if not present
+        if 'returns' not in df.columns:
+            df['returns'] = np.log(df['close'] / df['close'].shift(1))
+        
+        df['returns'] = df['returns'].replace([np.inf, -np.inf], np.nan).ffill()
+        
+        clean_df = df.dropna(subset=['returns'])
+        
+        if len(clean_df) < 1000:
+            return False, f"Insufficient data points: {len(clean_df)} < 1000"
+            
+        if clean_df['returns'].std() == 0:
+            return False, "Zero variance in returns"
+            
+        return True, clean_df
+
+    def _train_hmm(self, data):
+        """Train GaussianHMM with stability checks"""
+        best_model = None
+        best_score = -np.inf
+        
+        # Reshape data for hmmlearn
+        X = data['returns'].values.reshape(-1, 1)
+        
+        for i in range(5):
+            try:
+                model = hmm.GaussianHMM(
+                    n_components=3, 
+                    covariance_type="full", 
+                    n_iter=1000, 
+                    tol=1e-6,
+                    random_state=i
+                )
+                model.fit(X)
+                score = model.score(X)
+                if score > best_score:
+                    best_score = score
+                    best_model = model
+            except Exception as e:
+                logger.warning(f"HMM initialization {i} failed: {e}")
+                
+        return best_model
+
+    def _fallback_regime_logic(self, df):
+        """Rule-based classifier if HMM fails"""
+        # Stable = 21-day rolling vol < 50th percentile
+        # Volatile = > 90th percentile
+        # Transitional = between
+        vol = df['returns'].rolling(21).std()
+        p50 = vol.median()
+        p90 = vol.quantile(0.9)
+        
+        regimes = []
+        for v in vol:
+            if pd.isna(v):
+                regimes.append('Stable')
+            elif v < p50:
+                regimes.append('Stable')
+            elif v > p90:
+                regimes.append('Volatile')
+            else:
+                regimes.append('Transitional')
+        return regimes
+
     def compute_regime_metrics(self):
         """
-        Computes ASBN, CPTM-F, and shapes for all tickers and saves to regime_classifications.
+        Computes ASBN, CPTM-F, and HMM regimes for all tickers.
         """
-        logger.info("Computing ASBN, CPTM-F, and Trajectory Shapes...")
+        logger.info("Computing ASBN, CPTM-F, and HMM Regimes...")
         conn = sqlite3.connect(self.db_path)
         
         market_df = pd.read_sql_query("SELECT * FROM market_data ORDER BY date", conn)
         market_df['date'] = pd.to_datetime(market_df['date'])
         
-        vix_df = pd.read_sql_query("SELECT date, vix_close FROM vix_data ORDER BY date", conn)
-        vix_df['date'] = pd.to_datetime(vix_df['date'])
-        
         tickers = market_df['ticker'].unique()
         
-        # Clear old classifications
+        # Ensure classifications table exists or clear it
         conn.execute("DELETE FROM regime_classifications")
         
         for ticker in tickers:
             df = market_df[market_df['ticker'] == ticker].copy()
             df = df.sort_values('date')
             
-            # Merge VIX
-            df = df.merge(vix_df, on='date', how='left')
-            df['vix_close'] = df['vix_close'].ffill() # Forward fill missing VIX
+            # 1. HMM Regime Intelligence
+            valid, result = self._validate_data_for_hmm(df)
+            hmm_model = None
+            if valid:
+                hmm_model = self._train_hmm(result)
             
+            if hmm_model:
+                X = df['returns'].replace([np.inf, -np.inf], np.nan).ffill().fillna(0).values.reshape(-1, 1)
+                regime_idx = hmm_model.predict(X)
+                probs = hmm_model.predict_proba(X)
+                
+                # Map indices to labels (Stable, Transitional, Volatile)
+                # Usually based on variance or mean. Let's use variance for regime sorting.
+                variances = [np.diag(hmm_model.covars_[i])[0] for i in range(3)]
+                sorted_idx = np.argsort(variances)
+                label_map = {sorted_idx[0]: 'Stable', sorted_idx[1]: 'Transitional', sorted_idx[2]: 'Volatile'}
+                
+                df['regime_label'] = [label_map[i] for i in regime_idx]
+                df['regime_probability'] = [np.max(p) for p in probs]
+            else:
+                logger.warning(f"HMM failed for {ticker}: {result}. Using fallback logic.")
+                df['regime_label'] = self._fallback_regime_logic(df)
+                df['regime_probability'] = 0.5 # Default probability for fallback
+            
+            # 2. Advanced Metrics (ASBN, CPTM-F)
             df['asbn'] = self.calculate_asbn(df)
             df['cptm_f'] = self.calculate_cptm_f(df)
-            df['acceleration'] = self.calculate_trajectory_acceleration(df)
+            df['volume_zscore'] = (df['volume'] - df['volume'].rolling(60).mean()) / df['volume'].rolling(60).std().replace(0, np.nan)
             
-            # Multi-scale trends
-            df['trend_short'] = df['close'].rolling(20).mean()
-            df['trend_medium'] = df['close'].rolling(60).mean()
-            df['trend_long'] = df['close'].rolling(120).mean()
+            # 3. Save to DB and regime_labels.csv
+            df_out = df[['date', 'regime_label', 'regime_probability']]
+            df_out.to_csv(f'./data/processed/regime_labels_{ticker}.csv', index=False)
             
-            # Volume z-score
-            vol_mean = df['volume'].rolling(60).mean()
-            vol_std = df['volume'].rolling(60).std().replace(0, np.nan)
-            df['volume_zscore'] = (df['volume'] - vol_mean) / vol_std
-            
-            # Regime classification based on CPTM-F and ASBN
-            # If actual deviates strongly (> 1.5 std) and volume is high (>1.0 std), it's a structural deviation.
-            conditions = [
-                (df['cptm_f'] > 1.5) & (df['trend_short'] > df['trend_long']),
-                (df['cptm_f'] < -1.5) & (df['trend_short'] < df['trend_long'])
-            ]
-            choices = ['Bullish_Surge', 'Bearish_Shock']
-            df['regime_pred'] = np.select(conditions, choices, default='Stable')
-            
-            # Insert back to DB
-            for _, row in df.dropna(subset=['asbn', 'cptm_f']).iterrows():
+            for _, row in df.iterrows():
                 try:
                     conn.execute('''
                         INSERT INTO regime_classifications 
-                        (date, sector, regime, confidence, deviation_magnitude, volume_zscore, volatility_ratio)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        (date, sector, regime, confidence, deviation_magnitude, volume_zscore)
+                        VALUES (?, ?, ?, ?, ?, ?)
                     ''', (
                         row['date'].strftime('%Y-%m-%d'),
                         ticker,
-                        row['regime_pred'],
-                        abs(row['cptm_f']) / 3.0, # pseudo confidence bounded by 3-sigma
-                        row['asbn'],
-                        row['volume_zscore'],
-                        row['vix_close'] if pd.notna(row['vix_close']) else 0.0
+                        row['regime_label'],
+                        row['regime_probability'],
+                        row['cptm_f'] if pd.notna(row['cptm_f']) else 0.0,
+                        row['volume_zscore'] if pd.notna(row['volume_zscore']) else 0.0
                     ))
                 except Exception as e:
-                    logger.debug(f"Error inserting regime: {e}")
+                    pass
                     
         conn.commit()
         conn.close()

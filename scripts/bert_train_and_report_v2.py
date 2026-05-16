@@ -27,7 +27,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # ─── Config ──────────────────────────────────────────────────────────────────
 DB_PATH          = "./data/market_rhetoric.db"
 EMBEDDINGS_PATH  = "./data/processed/speech_embeddings.npy"
-OUTPUT_DIR       = "./data/processed"
+OUTPUT_DIR       = "content"
+FINBERT_MODEL_PATH = "./data/processed/finbert_topic_model.pkl"
 TRANSCRIPT_DIR   = "./transcripts/mann_ki_baat"
 
 SECTOR_TOPIC_MAP = {
@@ -120,10 +121,9 @@ def train_hybrid_topics():
     modeler  = HybridTopicModeler(n_topics=35)
     
     # LOAD PRE-TRAINED FINBERT MODEL
-    FINBERT_MODEL_PATH = "./data/processed/finbert_topic_model.pkl"
+    from bertopic import BERTopic
     print(f"    Loading pre-trained FinBERT model from {FINBERT_MODEL_PATH}...")
-    with open(FINBERT_MODEL_PATH, "rb") as f:
-        loaded_model = pickle.load(f)
+    loaded_model = BERTopic.load(FINBERT_MODEL_PATH)
     modeler.bertopic_model = loaded_model
     
     # Get topics/probs from loaded model
@@ -390,7 +390,7 @@ def generate_report(topic_model, speeches_df, topics, impact_df):
     safe_text = report_text.encode("ascii", errors="replace").decode("ascii")
     print(safe_text)
 
-    report_path = f"{OUTPUT_DIR}/speech_influence_report.txt"
+    report_path = f"{OUTPUT_DIR}/final_influence_report.txt"
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report_text)
     print(f"\n[5/5] Report saved to: {report_path}")
