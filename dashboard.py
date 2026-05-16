@@ -209,8 +209,9 @@ def regime_label(ret):
 
 
 def build_sector_fig(sdf, sector, period_col, rcol_pct, period_label):
-    """Build a per-sector return chart with regime bands from pre-computed data."""
+    """Build a per-sector chart showing Market Return vs Topic Strength."""
     color = SECTOR_COLORS.get(sector, "#94a3b8")
+    strength_color = "#f472b6" # Pinkish for strength
 
     fig = go.Figure()
 
@@ -242,14 +243,37 @@ def build_sector_fig(sdf, sector, period_col, rcol_pct, period_label):
             annotation_position="top left"
         )
 
-    # ── Return line ────────────────────────────────────────
+    # ── Topic Strength Line (Secondary Y) ──────────────────
+    if "speech_count" in sdf.columns:
+        fig.add_trace(go.Scatter(
+            x=sdf[period_col], y=sdf["speech_count"],
+            mode="lines+markers", name="Topic Strength",
+            line=dict(color=strength_color, width=2, dash='dot'),
+            marker=dict(size=4),
+            yaxis="y2",
+            hovertemplate=(
+                f"{period_label}: %{{x}}<br>"
+                "Strength (Speeches): %{y}<extra>Intelligence</extra>"
+            )
+        ))
+
+    # ── Market Return line (Primary Y) ──────────────────────
+    rt_info = ""
+    if "return_time" in sdf.columns:
+        # Include return time in hover
+        sdf['hover_text'] = sdf.apply(lambda r: f"<br>Est. Return Time: {r['return_time']}", axis=1)
+    else:
+        sdf['hover_text'] = ""
+
     fig.add_trace(go.Scatter(
         x=sdf[period_col], y=sdf[rcol_pct],
-        mode="lines+markers", name=sector,
-        line=dict(color=color, width=2), marker=dict(size=4),
+        mode="lines+markers", name="Market Return",
+        line=dict(color=color, width=2.5), marker=dict(size=6),
+        customdata=sdf['return_time'] if 'return_time' in sdf.columns else [None]*len(sdf),
         hovertemplate=(
             f"{period_label}: %{{x}}<br>"
-            f"Return: %{{y:.3f}}%<extra>{sector}</extra>"
+            f"Return: %{{y:.3f}}%<br>"
+            "Est. Max Return Time: %{customdata}<extra>" + sector + "</extra>"
         )
     ))
 
@@ -267,12 +291,19 @@ def build_sector_fig(sdf, sector, period_col, rcol_pct, period_label):
             ),
             font=dict(size=15)
         ),
-        height=320,
+        height=350,
         xaxis=dict(title=period_label, tickangle=-45, nticks=10),
-        yaxis=dict(title="Avg Return (%)", zeroline=True, zerolinecolor="#475569"),
+        yaxis=dict(title="Avg Return (%)", zeroline=True, zerolinecolor="#475569", side="left"),
+        yaxis2=dict(
+            title="Topic Strength (Speeches)",
+            overlaying="y",
+            side="right",
+            showgrid=False,
+            rangemode="tozero"
+        ),
         plot_bgcolor="#0f172a", paper_bgcolor="#0f172a",
-        margin=dict(t=55, b=50, l=50, r=15),
-        showlegend=False
+        margin=dict(t=55, b=50, l=50, r=50),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
     return fig
 
