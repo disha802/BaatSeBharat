@@ -2,12 +2,44 @@
 # ==========================================================
 # BAATSEBHARAT | LRDR-MRPRA DASHBOARD
 # LDA + NMF + FinBERT VERSION  — cache-backed fast edition
+# + TradingAgents AI Predictions (Phase 2)
+# + GeoDashboard Global Influence Map (Phase 3)
 # ==========================================================
 
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
+import plotly.express as px
 import os
+import sys
+import numpy as np
+
+# ── Path setup for integrated modules ─────────────────────
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(_BASE_DIR, "src"))
+
+# ── Import new integration modules (non-fatal) ────────────
+try:
+    from prediction_engine import (
+        get_all_company_predictions,
+        get_all_sector_predictions,
+        get_company_prediction,
+        get_sector_prediction,
+        COMPANY_UNIVERSE,
+        SECTOR_COMPANIES,
+        _llm_mode_available,
+    )
+    _PREDICTION_ENGINE_OK = True
+except ImportError as _e:
+    _PREDICTION_ENGINE_OK = False
+    _pe_error = str(_e)
+
+try:
+    from geo_dashboard import render_global_influence_map
+    _GEO_DASHBOARD_OK = True
+except ImportError as _e:
+    _GEO_DASHBOARD_OK = False
+    _geo_error = str(_e)
 
 # ==========================================================
 # PAGE CONFIG
@@ -188,6 +220,34 @@ df_forecast_q = load_forecast_quarterly()
 df_forecast_w = load_forecast_weekly()
 report_text   = load_report()
 
+# --- Cached AI Predictions wrappers for high performance ---
+@st.cache_data(ttl=1800, show_spinner=False)
+def _cached_company_predictions(sentiment: float, topic_str: float, regime: str, hist_ret: float) -> list:
+    if not _PREDICTION_ENGINE_OK:
+        return []
+    return get_all_company_predictions(
+        sentiment_score=sentiment,
+        topic_strength=topic_str,
+        regime_label=regime,
+        historical_return=hist_ret,
+        use_llm=False
+    )
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _cached_sector_predictions(sentiment: float, topic_str: float, sector_avg_json: str, regime_df_json: str) -> list:
+    if not _PREDICTION_ENGINE_OK:
+        return []
+    import json
+    # Reconstruct inputs if JSON strings are passed to keep hashable types
+    sector_avg = pd.read_json(sector_avg_json) if sector_avg_json else None
+    regime_df = pd.read_json(regime_df_json) if regime_df_json else None
+    return get_all_sector_predictions(
+        sentiment_score=sentiment,
+        topic_strength=topic_str,
+        sector_returns=sector_avg,
+        regime_df=regime_df
+    )
+
 # ==========================================================
 # HELPERS
 # ==========================================================
@@ -318,10 +378,21 @@ with st.sidebar:
     st.markdown("---")
     page = st.radio(
         "SELECT VIEW",
-        ["📊 OVERVIEW", "📈 MARKET DYNAMICS", "🔎 SPEECH AUDIT", "🧠 TOPIC EXPLORER"]
+        [
+            "📊 OVERVIEW",
+            "📈 MARKET DYNAMICS",
+            "🔎 SPEECH AUDIT",
+            "🧠 TOPIC EXPLORER",
+            "🤖 AI PREDICTIONS",
+            "🌍 GLOBAL INFLUENCE MAP",
+        ]
     )
     st.markdown("---")
-    st.caption("v2.1 | cache-backed")
+    if _PREDICTION_ENGINE_OK and _llm_mode_available():
+        st.success("🤖 LLM Mode Active")
+    else:
+        st.caption("🤖 AI: rule-based mode")
+    st.caption("v3.0 | TradingAgents + GeoDashboard")
 
 # ==========================================================
 # OVERVIEW
@@ -803,3 +874,415 @@ elif page == "🧠 TOPIC EXPLORER":
         margin=dict(t=55, b=120, l=55, r=20)
     )
     st.plotly_chart(fig, use_container_width=True)
+
+# ==========================================================
+# AI PREDICTIONS  (Phase 2 — TradingAgents Integration)
+# ==========================================================
+
+elif page == "🤖 AI PREDICTIONS":
+
+    st.markdown(
+        '<h1 class="hero-title">🤖 AI Market Predictions</h1>',
+        unsafe_allow_html=True
+    )
+    st.markdown(
+        '<p class="hero-subtitle">'
+        'Company- and sector-level forecasts powered by BaatSeBharat NLP signals.</p>',
+        unsafe_allow_html=True
+    )
+
+    if not _PREDICTION_ENGINE_OK:
+        st.error(f"Prediction engine unavailable: {_pe_error}")
+        st.stop()
+
+    # ── Signal inputs (from BaatSeBharat cache) ───────────────
+    st.markdown("---")
+    st.markdown("### ⚙️ Signal Inputs")
+    st.caption(
+        "These values are derived from the BaatSeBharat NLP pipeline "
+        "(FinBERT sentiment, topic strengths, regime labels). "
+        "You can override them manually below."
+    )
+
+    # Load live values from cache
+    _sentiment_default = 0.0
+    _topic_default     = 0.5
+    _regime_default    = "Neutral"
+    _hist_ret_default  = 0.0
+
+    if not df_sentiment.empty and "sentiment" in df_sentiment.columns:
+        _sentiment_default = float(df_sentiment["sentiment"].tail(30).mean())
+
+    if not df_topics.empty and "score" in df_topics.columns:
+        _topic_default = float(df_topics["score"].max())
+
+    if not df_sector_avg.empty:
+        _hist_ret_default = float(df_sector_avg["return_5d"].mean())
+
+    if not df_regime_q.empty and "regime" in df_regime_q.columns:
+        _regime_default = str(df_regime_q["regime"].value_counts().idxmax())
+
+    col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+    with col_s1:
+        user_sentiment = st.slider(
+            "FinBERT Sentiment", -1.0, 1.0, float(round(_sentiment_default, 3)), 0.01
+        )
+    with col_s2:
+        user_topic_str = st.slider(
+            "Topic Strength", 0.0, 1.0, float(round(_topic_default, 3)), 0.01
+        )
+    with col_s3:
+        user_regime = st.selectbox(
+            "Market Regime",
+            ["Bull", "Neutral", "Bear", "Stable", "Transitional", "Volatile"],
+            index=["Bull", "Neutral", "Bear", "Stable", "Transitional", "Volatile"].index(
+                _regime_default if _regime_default in
+                ["Bull", "Neutral", "Bear", "Stable", "Transitional", "Volatile"]
+                else "Neutral"
+            )
+        )
+    with col_s4:
+        use_llm = st.checkbox(
+            "Use LLM Mode",
+            value=_llm_mode_available(),
+            disabled=not _llm_mode_available(),
+            help="Requires OPENAI_API_KEY or GOOGLE_API_KEY in .env"
+        )
+
+    horizons = [1, 5, 10]
+
+    # ── Tabs: Company vs Sector ────────────────────────────────
+    pred_tab1, pred_tab2 = st.tabs(["🏢 Company Predictions", "📦 Sector Predictions"])
+
+    with pred_tab1:
+        st.markdown("### 🏢 Company-Level Predictions")
+        st.caption(
+            "Predictions for 15 major Indian companies. "
+            "Signal derived from sentiment + topic + regime + price momentum."
+        )
+
+        sel_company = st.selectbox(
+            "Select Company for Detailed View",
+            list(COMPANY_UNIVERSE.keys())
+        )
+
+        with st.spinner(f"Generating prediction for {sel_company}…"):
+            pred = get_company_prediction(
+                sel_company,
+                sentiment_score=user_sentiment,
+                topic_strength=user_topic_str,
+                regime_label=user_regime,
+                historical_return=_hist_ret_default,
+                use_llm=use_llm,
+            )
+
+        # ── Signal card ──────────────────────────────────────
+        signal_color = {"Bullish": "#34d399", "Bearish": "#f87171", "Neutral": "#94a3b8"}[
+            pred["signal"]
+        ]
+        st.markdown(
+            f"""
+            <div style='background:#1e293b;border-radius:12px;padding:20px;border:1px solid {signal_color};margin-bottom:16px'>
+                <div style='font-size:2rem;font-weight:700;color:{signal_color}'>
+                    {pred['emoji']} {pred['signal'].upper()}
+                </div>
+                <div style='color:#94a3b8;font-size:0.95rem;margin-top:4px'>
+                    {sel_company} &nbsp;|&nbsp; Ticker: {pred['ticker'] or 'N/A'}
+                    &nbsp;|&nbsp; Mode: {pred['mode'].upper()}
+                    &nbsp;|&nbsp; Confidence: <b style='color:{signal_color}'>{pred['confidence']:.0f}%</b>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # ── Current price ─────────────────────────────────────
+        if pred.get("current_price"):
+            st.metric(
+                f"Current Price ({pred['ticker']})",
+                f"₹{pred['current_price']:,.2f}"
+            )
+
+        # ── Horizon forecast cards ────────────────────────────
+        st.markdown("#### 📅 Forecast Horizons")
+        h_cols = st.columns(3)
+        for idx, h in enumerate(horizons):
+            fcast = pred["predictions"].get(h, {})
+            ret   = fcast.get("return_pct", 0.0)
+            rlow  = fcast.get("return_low", 0.0)
+            rhigh = fcast.get("return_high", 0.0)
+            ret_color = "#34d399" if ret > 0 else ("#f87171" if ret < 0 else "#94a3b8")
+
+            with h_cols[idx]:
+                p_mid  = fcast.get("price_mid",  None)
+                p_low  = fcast.get("price_low",  None)
+                p_high = fcast.get("price_high", None)
+
+                price_str = ""
+                if p_mid:
+                    price_str = (
+                        f"<div style='font-size:0.8rem;color:#64748b;margin-top:4px'>"
+                        f"₹{p_low:,.0f} – ₹{p_high:,.0f}</div>"
+                    )
+
+                st.markdown(
+                    f"""
+                    <div style='background:#1e293b;border-radius:10px;padding:16px;border:1px solid #334155;text-align:center'>
+                        <div style='color:#94a3b8;font-size:0.85rem'>{fcast.get('label','')}</div>
+                        <div style='font-size:1.6rem;font-weight:700;color:{ret_color}'>
+                            {ret:+.2f}%
+                        </div>
+                        <div style='font-size:0.75rem;color:#475569'>
+                            Range: {rlow:+.1f}% to {rhigh:+.1f}%
+                        </div>
+                        {price_str}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+        # ── Input signals summary ─────────────────────────────
+        with st.expander("🔍 Input Signals Used"):
+            inputs = pred.get("inputs", {})
+            si_df = pd.DataFrame([
+                {"Signal": "FinBERT Sentiment",       "Value": f"{inputs.get('sentiment', 0):+.3f}"},
+                {"Signal": "Dominant Topic Strength", "Value": f"{inputs.get('topic_strength', 0):.3f}"},
+                {"Signal": "Market Regime",           "Value": inputs.get('regime', 'N/A')},
+                {"Signal": "5-Day Price Momentum",    "Value": f"{inputs.get('momentum_5d_pct', 0):+.2f}%"},
+                {"Signal": "Historical Avg Return",   "Value": f"{inputs.get('historical_return_pct', 0):+.2f}%"},
+            ])
+            st.dataframe(si_df, use_container_width=True, hide_index=True)
+
+        if use_llm and pred.get("llm_decision"):
+            with st.expander("🤖 LLM Decision Reasoning"):
+                st.text(pred["llm_decision"])
+
+        st.markdown("---")
+
+        # ── All companies grid ────────────────────────────────
+        st.markdown("### 📋 All Companies Overview")
+        with st.spinner("Loading cached bulk predictions…"):
+            all_preds = _cached_company_predictions(
+                round(user_sentiment, 3),
+                round(user_topic_str, 3),
+                user_regime,
+                round(_hist_ret_default, 6)
+            )
+
+        # Summary bar chart
+        pred_rows = []
+        for p in all_preds:
+            fcast_1d = p["predictions"].get(1, {})
+            fcast_5d = p["predictions"].get(5, {})
+            fcast_10d = p["predictions"].get(10, {})
+            pred_rows.append({
+                "Company":     p["company"],
+                "Signal":      p["signal"],
+                "Confidence":  p["confidence"],
+                "Score":       p["score"],
+                "1D Forecast": fcast_1d.get("return_pct", 0),
+                "5D Forecast": fcast_5d.get("return_pct", 0),
+                "10D Forecast": fcast_10d.get("return_pct", 0),
+            })
+        pred_df = pd.DataFrame(pred_rows).sort_values("Score", ascending=False)
+
+        # Color by signal
+        signal_color_map = {"Bullish": "#34d399", "Neutral": "#94a3b8", "Bearish": "#f87171"}
+        bar_colors = [signal_color_map.get(s, "#94a3b8") for s in pred_df["Signal"]]
+
+        fig_companies = go.Figure(go.Bar(
+            x=pred_df["Company"],
+            y=pred_df["5D Forecast"],
+            marker_color=bar_colors,
+            text=[f"{v:+.2f}%" for v in pred_df["5D Forecast"]],
+            textposition="outside",
+            hovertemplate=(
+                "<b>%{x}</b><br>"
+                "5D Forecast: %{y:+.2f}%<br>"
+                "<extra></extra>"
+            ),
+        ))
+        fig_companies.add_hline(y=0, line_dash="dot", line_color="#475569")
+        fig_companies.update_layout(
+            title="All Companies — 5-Day Return Forecast",
+            template="plotly_dark",
+            height=380,
+            xaxis_tickangle=-35,
+            yaxis_title="Forecast Return (%)",
+            plot_bgcolor="#0f172a",
+            paper_bgcolor="#0f172a",
+        )
+        st.plotly_chart(fig_companies, use_container_width=True)
+
+        # Confidence scatter
+        fig_conf = px.scatter(
+            pred_df,
+            x="Score",
+            y="Confidence",
+            color="Signal",
+            size="Confidence",
+            hover_name="Company",
+            color_discrete_map=signal_color_map,
+            title="Signal Score vs Confidence",
+            template="plotly_dark",
+        )
+        fig_conf.update_layout(
+            plot_bgcolor="#0f172a", paper_bgcolor="#0f172a", height=350
+        )
+        st.plotly_chart(fig_conf, use_container_width=True)
+
+        with st.expander("📋 Full Predictions Table"):
+            disp_pred = pred_df.copy()
+            disp_pred["Signal"] = pred_df["Signal"].map(
+                {"Bullish": "🟢 Bullish", "Neutral": "⚪ Neutral", "Bearish": "🔴 Bearish"}
+            )
+            for col in ["1D Forecast", "5D Forecast", "10D Forecast"]:
+                disp_pred[col] = disp_pred[col].map(lambda x: f"{x:+.2f}%")
+            disp_pred["Confidence"] = disp_pred["Confidence"].map(lambda x: f"{x:.0f}%")
+            st.dataframe(disp_pred, use_container_width=True, hide_index=True)
+
+    with pred_tab2:
+        st.markdown("### 📦 Sector-Level Predictions")
+        st.caption(
+            "Aggregated sector forecasts using constituent company momentum "
+            "+ BaatSeBharat regime & sector return data."
+        )
+
+        with st.spinner("Loading cached sector predictions…"):
+            df_sector_avg_json = df_sector_avg.to_json() if not df_sector_avg.empty else ""
+            df_regime_q_json = df_regime_q.to_json() if not df_regime_q.empty else ""
+            sector_preds = _cached_sector_predictions(
+                round(user_sentiment, 3),
+                round(user_topic_str, 3),
+                df_sector_avg_json,
+                df_regime_q_json
+            )
+
+        # Sector cards in 3-column grid
+        sector_rows = []
+        for sp in sector_preds:
+            fcast_1d  = sp["predictions"].get(1, {})
+            fcast_5d  = sp["predictions"].get(5, {})
+            fcast_10d = sp["predictions"].get(10, {})
+            sector_rows.append({
+                "Sector":      sp["sector"],
+                "Signal":      sp["signal"],
+                "Emoji":       sp["emoji"],
+                "Confidence":  sp["confidence"],
+                "Score":       sp["score"],
+                "1D Forecast": fcast_1d.get("return_pct", 0),
+                "5D Forecast": fcast_5d.get("return_pct", 0),
+                "10D Forecast": fcast_10d.get("return_pct", 0),
+            })
+
+        sec_df = pd.DataFrame(sector_rows).sort_values("Score", ascending=False)
+
+        # Sector cards
+        n_sectors = len(sec_df)
+        for i in range(0, n_sectors, 3):
+            cols = st.columns(3)
+            for j, row in enumerate(sec_df.iloc[i:i+3].itertuples()):
+                ret5 = row._7  # 5D Forecast
+                ret_color = "#34d399" if ret5 > 0 else ("#f87171" if ret5 < 0 else "#94a3b8")
+                sig_color = {"Bullish": "#34d399", "Bearish": "#f87171", "Neutral": "#94a3b8"}[
+                    row.Signal
+                ]
+                with cols[j]:
+                    st.markdown(
+                        f"""
+                        <div style='background:#1e293b;border-radius:12px;padding:18px;
+                                    border:1px solid {sig_color};margin-bottom:12px'>
+                            <div style='font-size:1.1rem;font-weight:700;color:{sig_color}'>
+                                {row.Emoji} {row.Sector}
+                            </div>
+                            <div style='color:#94a3b8;font-size:0.8rem;margin-top:2px'>
+                                Confidence: {row.Confidence:.0f}%
+                            </div>
+                            <table style='width:100%;margin-top:10px;font-size:0.85rem'>
+                                <tr>
+                                    <td style='color:#64748b'>1D</td>
+                                    <td style='color:{ret_color};text-align:right'>{row._6:+.2f}%</td>
+                                </tr>
+                                <tr>
+                                    <td style='color:#64748b'>1W</td>
+                                    <td style='color:{ret_color};text-align:right'>{ret5:+.2f}%</td>
+                                </tr>
+                                <tr>
+                                    <td style='color:#64748b'>10D</td>
+                                    <td style='color:{ret_color};text-align:right'>{row._8:+.2f}%</td>
+                                </tr>
+                            </table>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+        # Sector comparison bar chart
+        sec_bar_colors = [
+            signal_color_map.get(row.Signal, "#94a3b8") for row in sec_df.itertuples()
+        ]
+        fig_sec = go.Figure()
+        for h_days, h_label, dash in [
+            ("1D Forecast", "1-Day", "solid"),
+            ("5D Forecast", "1-Week", "dot"),
+            ("10D Forecast", "10-Day", "dash")
+        ]:
+            fig_sec.add_trace(go.Bar(
+                name=h_label,
+                x=sec_df["Sector"],
+                y=sec_df[h_days],
+                text=[f"{v:+.2f}%" for v in sec_df[h_days]],
+                textposition="outside",
+            ))
+
+        fig_sec.add_hline(y=0, line_dash="dot", line_color="#475569")
+        fig_sec.update_layout(
+            title="Sector Return Forecasts — 1D / 1W / 10D",
+            barmode="group",
+            template="plotly_dark",
+            height=380,
+            yaxis_title="Forecast Return (%)",
+            plot_bgcolor="#0f172a",
+            paper_bgcolor="#0f172a",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        )
+        st.plotly_chart(fig_sec, use_container_width=True)
+
+        st.info(
+            "💡 **Note:** Predictions are derived from BaatSeBharat NLP signals "
+            "(FinBERT sentiment, topic modeling, regime detection) combined with live price momentum. "
+            "Enable LLM Mode with an API key for AI-enhanced analysis."
+        )
+
+# ==========================================================
+# GLOBAL INFLUENCE MAP  (Phase 3 — GeoDashboard Integration)
+# ==========================================================
+
+elif page == "🌍 GLOBAL INFLUENCE MAP":
+
+    if not _GEO_DASHBOARD_OK:
+        st.error(f"GeoDashboard module unavailable: {_geo_error}")
+        st.info("Install dependencies: `pip install wbdata kaleido`")
+        st.stop()
+
+    # Pass company predictions from the prediction engine if available
+    _company_preds_for_map = None
+    if _PREDICTION_ENGINE_OK:
+        try:
+            # Quick rule-based predictions for geo map (no LLM for speed)
+            _sentiment_map = 0.0
+            _topic_map     = 0.5
+            if not df_sentiment.empty and "sentiment" in df_sentiment.columns:
+                _sentiment_map = float(df_sentiment["sentiment"].tail(30).mean())
+            if not df_topics.empty and "score" in df_topics.columns:
+                _topic_map = float(df_topics["score"].max())
+            _company_preds_for_map = _cached_company_predictions(
+                round(_sentiment_map, 3),
+                round(_topic_map, 3),
+                "Neutral",
+                0.0
+            )
+        except Exception:
+            _company_preds_for_map = None
+
+    render_global_influence_map(company_predictions=_company_preds_for_map)
