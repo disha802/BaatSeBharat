@@ -1,3 +1,17 @@
+import asyncio
+import sys
+import os
+# Ensure TradingAgents is in path
+_data_dir = os.path.dirname(os.path.abspath(__file__))
+_src_dir = os.path.dirname(_data_dir)
+_root_dir = os.path.dirname(_src_dir)
+_ta_dir = os.path.join(_root_dir, 'TradingAgents')
+if _ta_dir not in sys.path:
+    sys.path.insert(0, _ta_dir)
+try:
+    from tradingagents.dataflows import yf_cache_patch
+except Exception:
+    pass
 import yfinance as yf
 import pandas as pd
 import yaml
@@ -6,6 +20,16 @@ from datetime import datetime
 import time
 import sys
 import os
+
+
+def _ensure_event_loop():
+    """Recreate asyncio event loop if Streamlit has closed it."""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError("closed")
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from src.utils.logger import setup_logger
@@ -28,6 +52,7 @@ class MarketDataDownloader:
         logger.info(f"Downloading {symbol} ({sector_name})...")
         
         try:
+            _ensure_event_loop()
             # Download data
             ticker = yf.Ticker(symbol)
             df = ticker.history(

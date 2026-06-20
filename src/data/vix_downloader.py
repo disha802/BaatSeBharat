@@ -1,3 +1,16 @@
+import sys
+import os
+# Ensure TradingAgents is in path
+_data_dir = os.path.dirname(os.path.abspath(__file__))
+_src_dir = os.path.dirname(_data_dir)
+_root_dir = os.path.dirname(_src_dir)
+_ta_dir = os.path.join(_root_dir, 'TradingAgents')
+if _ta_dir not in sys.path:
+    sys.path.insert(0, _ta_dir)
+try:
+    from tradingagents.dataflows import yf_cache_patch
+except Exception:
+    pass
 import yfinance as yf
 import sqlite3
 from datetime import datetime

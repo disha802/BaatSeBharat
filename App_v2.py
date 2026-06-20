@@ -13,6 +13,12 @@ import json
 # ── Add src to path ────────────────────────────────────────────────────────
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_APP_DIR, 'src'))
+sys.path.insert(0, os.path.join(_APP_DIR, 'TradingAgents'))
+
+try:
+    from tradingagents.dataflows import yf_cache_patch
+except Exception:
+    pass
 
 from utils.logger import setup_logger
 from utils.db_utils import get_db_connection

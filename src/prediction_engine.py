@@ -36,6 +36,17 @@ logger = logging.getLogger(__name__)
 # Optional yfinance import (non-fatal)
 # ──────────────────────────────────────────────────────────────────
 try:
+    import sys
+    import os
+    _src_dir = os.path.dirname(os.path.abspath(__file__))
+    _root_dir = os.path.dirname(_src_dir)
+    _ta_dir = os.path.join(_root_dir, 'TradingAgents')
+    if _ta_dir not in sys.path:
+        sys.path.insert(0, _ta_dir)
+    try:
+        from tradingagents.dataflows import yf_cache_patch
+    except Exception:
+        pass
     import yfinance as yf
     _YF_AVAILABLE = True
 except ImportError:
@@ -156,11 +167,20 @@ def _detect_llm_provider() -> Optional[str]:
 # ──────────────────────────────────────────────────────────────────
 # Caching System and Resolve Helpers
 # ──────────────────────────────────────────────────────────────────
+import asyncio
+import json as _json
 import time
+import threading
 
 _YF_MOMENTUM_CACHE: Dict[Tuple[str, int], Tuple[Tuple[float, float, float], float]] = {}
 _YF_PRICE_CACHE: Dict[str, Tuple[float, float]] = {}
-YF_CACHE_TTL = 1800  # 30 minutes in seconds
+# Negative cache: stores tickers that recently failed so we don't retry
+_YF_FAIL_CACHE: Dict[str, float] = {}
+YF_CACHE_TTL = 1800   # 30 minutes for good data
+YF_FAIL_TTL  = 300    # 5 minutes cooldown for failed tickers
+_YF_DISK_CACHE_PATH = os.path.join('.', 'data', 'yf_cache.json')
+_YF_PREFETCH_DONE = False
+_YF_PREFETCH_LOCK = threading.Lock()
 
 DB_PATH = './data/market_rhetoric.db'
 
@@ -175,6 +195,166 @@ SECTOR_TICKER_MAP = {
     'Energy':       '^CNXENERGY',
     'Broad Market': '^NSEI',
 }
+
+
+def _ensure_event_loop():
+    """Ensure there is a working asyncio event loop.
+
+    Streamlit (and some Jupyter environments) close the event loop between
+    reruns.  yfinance ≥ 0.2 uses asyncio internally and crashes with
+    ``RuntimeError: Event loop is closed`` when this happens.  We recreate
+    a new loop and install it as current to prevent the error.
+    """
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError("closed")
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+
+def _load_disk_cache() -> Dict:
+    """Load cached yfinance data from disk (survives Streamlit reruns)."""
+    try:
+        if os.path.exists(_YF_DISK_CACHE_PATH):
+            with open(_YF_DISK_CACHE_PATH, 'r', encoding='utf-8') as f:
+                raw = _json.load(f)
+            now = time.time()
+            # Only load entries that are still fresh
+            if isinstance(raw, dict) and now - raw.get('_ts', 0) < YF_CACHE_TTL:
+                return raw
+    except Exception:
+        pass
+    return {}
+
+
+def _save_disk_cache():
+    """Persist current caches to disk for Streamlit rerun survival."""
+    try:
+        payload: Dict = {'_ts': time.time()}
+        for (ticker, _days), (vals, ts) in _YF_MOMENTUM_CACHE.items():
+            payload[f'm_{ticker}'] = {'vals': list(vals), 'ts': ts}
+        for ticker, (price, ts) in _YF_PRICE_CACHE.items():
+            payload[f'p_{ticker}'] = {'price': price, 'ts': ts}
+        os.makedirs(os.path.dirname(_YF_DISK_CACHE_PATH), exist_ok=True)
+        with open(_YF_DISK_CACHE_PATH, 'w', encoding='utf-8') as f:
+            _json.dump(payload, f)
+    except Exception as exc:
+        logger.debug("Failed to save disk cache: %s", exc)
+
+
+def _restore_from_disk_cache():
+    """Populate in-memory caches from disk cache on startup."""
+    raw = _load_disk_cache()
+    if not raw:
+        return
+    now = time.time()
+    for key, val in raw.items():
+        if key.startswith('m_'):
+            ticker = key[2:]
+            if now - val.get('ts', 0) < YF_CACHE_TTL:
+                _YF_MOMENTUM_CACHE[(ticker, 30)] = (tuple(val['vals']), val['ts'])
+        elif key.startswith('p_'):
+            ticker = key[2:]
+            if now - val.get('ts', 0) < YF_CACHE_TTL:
+                _YF_PRICE_CACHE[ticker] = (val['price'], val['ts'])
+
+
+# Restore on import
+_restore_from_disk_cache()
+
+
+def _prefetch_all_tickers():
+    """Batch-fetch price data for all tickers in one yf.download call.
+
+    Called once per process to populate caches.  Subsequent calls to
+    ``_fetch_price_momentum`` and ``_fetch_current_price`` hit the cache.
+    """
+    global _YF_PREFETCH_DONE
+    if not _YF_AVAILABLE or _YF_PREFETCH_DONE:
+        return
+    with _YF_PREFETCH_LOCK:
+        if _YF_PREFETCH_DONE:
+            return
+        _YF_PREFETCH_DONE = True
+
+    # Collect all unique tickers
+    all_tickers = list(set(
+        list(COMPANY_UNIVERSE.values()) +
+        list(SECTOR_TICKER_MAP.values())
+    ))
+
+    # Only fetch tickers not already cached
+    now = time.time()
+    tickers_needed = [
+        t for t in all_tickers
+        if (t, 30) not in _YF_MOMENTUM_CACHE
+        or now - _YF_MOMENTUM_CACHE[(t, 30)][1] > YF_CACHE_TTL
+    ]
+    if not tickers_needed:
+        return
+
+    logger.info("Pre-fetching price data for %d tickers…", len(tickers_needed))
+    _ensure_event_loop()
+
+    try:
+        # yf.download handles batching efficiently (one HTTP call per group)
+        data = yf.download(
+            tickers_needed,
+            period="1mo",
+            group_by="ticker",
+            progress=False,
+            threads=True,
+        )
+        if data.empty:
+            logger.warning("yf.download returned empty data for batch fetch.")
+            # Mark all as failed
+            for t in tickers_needed:
+                _YF_FAIL_CACHE[t] = now
+            return
+
+        for ticker in tickers_needed:
+            try:
+                if len(tickers_needed) == 1:
+                    ticker_data = data
+                else:
+                    ticker_data = data[ticker] if ticker in data.columns.get_level_values(0) else None
+
+                if ticker_data is None or ticker_data.empty:
+                    _YF_FAIL_CACHE[ticker] = now
+                    continue
+
+                close_col = ticker_data.get("Close")
+                if close_col is None or close_col.dropna().empty:
+                    _YF_FAIL_CACHE[ticker] = now
+                    continue
+
+                prices = close_col.dropna().values
+                if len(prices) < 5:
+                    _YF_FAIL_CACHE[ticker] = now
+                    continue
+
+                m30 = float((prices[-1] - prices[0]) / prices[0]) if len(prices) >= 20 else 0.0
+                m10 = float((prices[-1] - prices[-min(10, len(prices))]) / prices[-min(10, len(prices))])
+                m5  = float((prices[-1] - prices[-min(5, len(prices))]) / prices[-min(5, len(prices))])
+
+                _YF_MOMENTUM_CACHE[(ticker, 30)] = ((m30, m10, m5), now)
+                _YF_PRICE_CACHE[ticker] = (float(prices[-1]), now)
+            except Exception as exc:
+                logger.debug("Failed to parse batch data for %s: %s", ticker, exc)
+                _YF_FAIL_CACHE[ticker] = now
+
+        _save_disk_cache()
+        logger.info("Pre-fetch complete: %d momentum, %d price entries cached.",
+                     len(_YF_MOMENTUM_CACHE), len(_YF_PRICE_CACHE))
+
+    except Exception as exc:
+        logger.warning("Batch yf.download failed: %s — will try individual fetches.", exc)
+        # Mark all as failed temporarily
+        for t in tickers_needed:
+            _YF_FAIL_CACHE[t] = now
+
 
 def _query_db_cached(query: str, db_path: str, params: tuple = ()) -> pd.DataFrame:
     now = time.time()
@@ -278,23 +458,47 @@ def _resolve_sector_historical_return(sector: str) -> Tuple[float, float]:
     return 0.0, 0.0
 
 def _fill_yf_cache(ticker: str):
-    """Fetch history for ticker and populate both momentum and price caches."""
+    """Fetch history for a single ticker and populate both caches.
+
+    Includes negative caching: if a ticker fails, it won't be retried for
+    YF_FAIL_TTL seconds, preventing terminal spam.
+    """
     now = time.time()
     if not _YF_AVAILABLE:
         return
+
+    # Check negative cache — skip recently failed tickers
+    if ticker in _YF_FAIL_CACHE:
+        if now - _YF_FAIL_CACHE[ticker] < YF_FAIL_TTL:
+            return  # Still in cooldown
+        del _YF_FAIL_CACHE[ticker]
+
+    _ensure_event_loop()
+
     try:
         # Use a short period to make it fast
         data = yf.Ticker(ticker).history(period="1mo")
-        if not data.empty and len(data) >= 5:
-            prices = data["Close"].values
-            m30 = float((prices[-1] - prices[0]) / prices[0]) if len(prices) >= 20 else 0.0
-            m10 = float((prices[-1] - prices[-min(10, len(prices))]) / prices[-min(10, len(prices))])
-            m5  = float((prices[-1] - prices[-min(5, len(prices))]) / prices[-min(5, len(prices))])
-            
-            _YF_MOMENTUM_CACHE[(ticker, 30)] = ((m30, m10, m5), now)
-            _YF_PRICE_CACHE[ticker] = (float(prices[-1]), now)
+        if data is None or data.empty or len(data) < 5:
+            logger.debug("No data for %s — caching as failure.", ticker)
+            _YF_FAIL_CACHE[ticker] = now
+            return
+
+        prices = data["Close"].dropna().values
+        if len(prices) < 5:
+            _YF_FAIL_CACHE[ticker] = now
+            return
+
+        m30 = float((prices[-1] - prices[0]) / prices[0]) if len(prices) >= 20 else 0.0
+        m10 = float((prices[-1] - prices[-min(10, len(prices))]) / prices[-min(10, len(prices))])
+        m5  = float((prices[-1] - prices[-min(5, len(prices))]) / prices[-min(5, len(prices))])
+
+        _YF_MOMENTUM_CACHE[(ticker, 30)] = ((m30, m10, m5), now)
+        _YF_PRICE_CACHE[ticker] = (float(prices[-1]), now)
+        _save_disk_cache()
+
     except Exception as exc:
-        logger.debug("Failed to prefill cache for %s: %s", ticker, exc)
+        logger.debug("Failed to fetch %s: %s", ticker, exc)
+        _YF_FAIL_CACHE[ticker] = now
 
 def _fetch_price_momentum(ticker: str, days: int = 30) -> Tuple[float, float, float]:
     now = time.time()
@@ -303,9 +507,15 @@ def _fetch_price_momentum(ticker: str, days: int = 30) -> Tuple[float, float, fl
         val, ts = _YF_MOMENTUM_CACHE[cache_key]
         if now - ts < YF_CACHE_TTL:
             return val
-            
+
+    # Try batch prefetch first (runs only once per process)
+    _prefetch_all_tickers()
+    if cache_key in _YF_MOMENTUM_CACHE:
+        return _YF_MOMENTUM_CACHE[cache_key][0]
+
+    # Fallback to individual fetch
     _fill_yf_cache(ticker)
-    
+
     if cache_key in _YF_MOMENTUM_CACHE:
         return _YF_MOMENTUM_CACHE[cache_key][0]
     return 0.0, 0.0, 0.0
@@ -316,9 +526,15 @@ def _fetch_current_price(ticker: str) -> Optional[float]:
         val, ts = _YF_PRICE_CACHE[ticker]
         if now - ts < YF_CACHE_TTL:
             return val
-            
+
+    # Try batch prefetch first
+    _prefetch_all_tickers()
+    if ticker in _YF_PRICE_CACHE:
+        return _YF_PRICE_CACHE[ticker][0]
+
+    # Fallback to individual fetch
     _fill_yf_cache(ticker)
-    
+
     if ticker in _YF_PRICE_CACHE:
         return _YF_PRICE_CACHE[ticker][0]
     return None
